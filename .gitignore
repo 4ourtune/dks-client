@@ -117,3 +117,6 @@ coverage/
 # Temporary folders
 tmp/
 temp/
+
+# backup
+backup/
