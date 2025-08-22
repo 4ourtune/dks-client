@@ -1,4 +1,4 @@
-export const API_BASE_URL = 'http://192.168.173.136:3000/api';
+export const API_BASE_URL = 'http://34.46.208.174:3000/api';
 
 export const APP_CONFIG = {
   name: 'Digital Key',

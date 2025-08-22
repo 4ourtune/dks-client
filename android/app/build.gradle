@@ -78,6 +78,12 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace 'com.dks.project'
+    
+    externalNativeBuild {
+        cmake {
+            cppFlags "-Wno-dollar-in-identifier-extension"
+        }
+    }
     defaultConfig {
         applicationId 'com.dks.project'
         minSdkVersion rootProject.ext.minSdkVersion
