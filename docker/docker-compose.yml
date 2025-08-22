@@ -1,0 +1,60 @@
+services:
+  # 의존성 설치 서비스 (초기화용)
+  installer:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - node_modules:/app/node_modules
+    command: npm ci
+    healthcheck:
+      test: ["CMD", "test", "-d", "/app/node_modules"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Metro 번들러 서버 (자동 시작)
+  metro:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - node_modules:/app/node_modules
+    network_mode: host
+    environment:
+      - REACT_NATIVE_PACKAGER_HOSTNAME=0.0.0.0
+    depends_on:
+      installer:
+        condition: service_completed_successfully
+    command: npx react-native start
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8082/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Android 개발 앱 실행 (Docker Desktop에서 수동 시작)
+  android:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - node_modules:/app/node_modules
+    network_mode: host
+    command: npm run android
+    restart: "no"
+
+  # Android 릴리즈 빌드 (Docker Desktop에서 수동 시작)
+  android-release:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - node_modules:/app/node_modules
+    network_mode: host
+    command: npm run release-android
+    restart: "no"
+
+volumes:
+  node_modules:
