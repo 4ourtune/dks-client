@@ -171,7 +171,7 @@ export const RegisterScreen: React.FC = () => {
               leftIcon="lock"
               error={errors.password}
               placeholder="Create a password"
-              hint="Password must be at least 8 characters with uppercase, lowercase, and numbers"
+              hint="Password must be at least 8 characters with one uppercase, lowercase, number, and special character"
               required
             />
 
