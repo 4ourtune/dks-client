@@ -41,16 +41,19 @@ export const RegisterScreen: React.FC = () => {
       confirmPassword: '',
     };
 
-    if (!formData.name.trim()) {
-      newErrors.name = 'Full name is required';
-    } else if (formData.name.trim().length < 2) {
-      newErrors.name = 'Full name must be at least 2 characters';
+    const nameValue = formData.name.trim();
+    if (!nameValue) {
+      newErrors.name = 'Name is required';
+    } else if (nameValue.length < VALIDATION_RULES.NAME.MIN_LENGTH) {
+      newErrors.name = 'Name is required';
+    } else if (nameValue.length > VALIDATION_RULES.NAME.MAX_LENGTH) {
+      newErrors.name = 'Name too long';
     }
 
     if (!formData.email.trim()) {
       newErrors.email = 'Email is required';
     } else if (!VALIDATION_RULES.EMAIL.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email address';
+      newErrors.email = 'Invalid email format';
     }
 
     if (!formData.password.trim()) {
@@ -61,12 +64,8 @@ export const RegisterScreen: React.FC = () => {
       
       if (password.length < rules.MIN_LENGTH) {
         newErrors.password = `Password must be at least ${rules.MIN_LENGTH} characters`;
-      } else if (rules.REQUIRE_UPPERCASE && !/[A-Z]/.test(password)) {
-        newErrors.password = 'Password must contain at least one uppercase letter';
-      } else if (rules.REQUIRE_LOWERCASE && !/[a-z]/.test(password)) {
-        newErrors.password = 'Password must contain at least one lowercase letter';
-      } else if (rules.REQUIRE_NUMBERS && !/\d/.test(password)) {
-        newErrors.password = 'Password must contain at least one number';
+      } else if (!rules.PATTERN.test(password)) {
+        newErrors.password = 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character';
       }
     }
 

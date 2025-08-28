@@ -39,7 +39,12 @@ export const VALIDATION_RULES = {
     REQUIRE_UPPERCASE: true,
     REQUIRE_LOWERCASE: true,
     REQUIRE_NUMBERS: true,
-    REQUIRE_SPECIAL: false,
+    REQUIRE_SPECIAL: true,
+    PATTERN: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/,
+  },
+  NAME: {
+    MIN_LENGTH: 1,
+    MAX_LENGTH: 100,
   },
   VIN: /^[A-HJ-NPR-Z0-9]{17}$/,
   DEVICE_ID: /^[A-F0-9]{12}$/i,
