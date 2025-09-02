@@ -2,6 +2,7 @@ export * from './auth';
 export * from './vehicle';
 export * from './key';
 export * from './ble';
+export * from './pki';
 
 export interface ApiResponse<T> {
   data: T;

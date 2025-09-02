@@ -1,13 +1,18 @@
 import { BleManager, Device, Service, Characteristic, State } from 'react-native-ble-plx';
 import { PermissionsAndroid, Platform, Alert } from 'react-native';
 import { check, request, PERMISSIONS, RESULTS } from 'react-native-permissions';
-import { BLEDevice, CommandPacket, ResponsePacket, BLE_CONFIG } from '@/types';
+import { BLEDevice, CommandPacket, ResponsePacket, BLE_CONFIG, PKISession } from '@/types';
+import { CryptoService } from './CryptoService';
+import { PKIProtocolHandler } from './PKIProtocolHandler';
+import { CertificateService } from '@/services/crypto/CertificateService';
 
 class BLEManagerClass {
   private manager: BleManager;
   private connectedDevice: Device | null = null;
   private characteristic: Characteristic | null = null;
   private mockMode: boolean = false;
+  private pkiSession: PKISession | null = null;
+  private usePKI: boolean = true;
 
   constructor() {
     this.manager = new BleManager();
@@ -139,6 +144,13 @@ class BLEManagerClass {
     if (this.mockMode) {
       await this.delay(2000);
       console.log('Mock: Connected to device', deviceId);
+      
+      // Mock PKI session establishment
+      if (this.usePKI) {
+        await this.delay(1000);
+        console.log('Mock: PKI session established');
+      }
+      
       return;
     }
 
@@ -166,9 +178,16 @@ class BLEManagerClass {
       }
 
       console.log('Connected to device successfully');
+
+      // Establish PKI session if enabled
+      if (this.usePKI) {
+        await this.establishPKISession(deviceId);
+      }
+      
     } catch (error: any) {
       this.connectedDevice = null;
       this.characteristic = null;
+      this.pkiSession = null;
       throw new Error(`Connection failed: ${error.message}`);
     }
   }
@@ -176,10 +195,17 @@ class BLEManagerClass {
   async disconnect(): Promise<void> {
     if (this.mockMode) {
       console.log('Mock: Disconnected from device');
+      this.pkiSession = null;
       return;
     }
 
     try {
+      // Clear PKI session
+      if (this.pkiSession) {
+        CryptoService.clearSession(this.connectedDevice?.id || '');
+        this.pkiSession = null;
+      }
+
       if (this.connectedDevice) {
         await this.connectedDevice.cancelConnection();
         this.connectedDevice = null;
@@ -201,17 +227,12 @@ class BLEManagerClass {
     }
 
     try {
-      const commandData = JSON.stringify(command);
-      const base64Data = Buffer.from(commandData).toString('base64');
-
-      await this.characteristic.writeWithResponse(base64Data);
-
-      await this.delay(500);
-
-      const response = await this.characteristic.read();
-      const responseData = Buffer.from(response.value!, 'base64').toString();
-      
-      return JSON.parse(responseData) as ResponsePacket;
+      // Use PKI or legacy method
+      if (this.usePKI && this.pkiSession) {
+        return await this.sendSecureCommand(command);
+      } else {
+        return await this.sendLegacyCommand(command);
+      }
     } catch (error: any) {
       throw new Error(`Command failed: ${error.message}`);
     }
@@ -289,6 +310,163 @@ class BLEManagerClass {
     }
 
     return 'unknown';
+  }
+
+  // PKI Methods
+
+  private async establishPKISession(deviceId: string): Promise<void> {
+    try {
+      console.log('Establishing PKI session...');
+      
+      // Step 1: Request vehicle certificate
+      const vehicleCertResponse = await this.requestVehicleCertificate();
+      
+      // Step 2: Establish secure session
+      this.pkiSession = await PKIProtocolHandler.establishSecureConnection(
+        deviceId,
+        vehicleCertResponse
+      );
+      
+      console.log('PKI session established successfully');
+    } catch (error) {
+      console.error('PKI session establishment failed:', error);
+      throw new Error('PKI session failed');
+    }
+  }
+
+  private async requestVehicleCertificate(): Promise<string> {
+    if (!this.characteristic) {
+      throw new Error('No characteristic available');
+    }
+
+    try {
+      // Send certificate request
+      const request = { type: 'cert_request', timestamp: Date.now() };
+      const requestData = JSON.stringify(request);
+      const base64Data = Buffer.from(requestData).toString('base64');
+
+      await this.characteristic.writeWithResponse(base64Data);
+      await this.delay(1000);
+
+      // Read certificate response
+      const response = await this.characteristic.read();
+      const responseData = Buffer.from(response.value!, 'base64').toString();
+      
+      const parsed = JSON.parse(responseData);
+      if (!parsed.certificate) {
+        throw new Error('No certificate in response');
+      }
+
+      return JSON.stringify(parsed.certificate);
+    } catch (error) {
+      console.error('Vehicle certificate request failed:', error);
+      throw error;
+    }
+  }
+
+  private async sendSecureCommand(command: CommandPacket): Promise<ResponsePacket> {
+    if (!this.pkiSession || !this.characteristic) {
+      throw new Error('No secure session or characteristic available');
+    }
+
+    try {
+      console.log('Sending secure PKI command:', command.command);
+      
+      // Get vehicle ID from session or command
+      const vehicleId = 1; // Should be derived from session context
+      
+      // Create secure command chunks
+      const commandChunks = await PKIProtocolHandler.createSecureCommand(
+        command.command,
+        vehicleId,
+        this.pkiSession
+      );
+
+      // Send command chunks
+      const responseChunks: string[] = [];
+      for (const chunk of commandChunks) {
+        const base64Chunk = Buffer.from(chunk).toString('base64');
+        await this.characteristic.writeWithResponse(base64Chunk);
+        await this.delay(200); // Small delay between chunks
+      }
+
+      // Receive response chunks
+      await this.delay(500); // Wait for processing
+      
+      // For now, simulate single response chunk
+      const response = await this.characteristic.read();
+      const responseData = Buffer.from(response.value!, 'base64').toString();
+      responseChunks.push(responseData);
+
+      // Process secure response
+      const decryptedResponse = await PKIProtocolHandler.processSecureResponse(
+        responseChunks,
+        this.pkiSession,
+        this.pkiSession.vehiclePublicKey
+      );
+
+      return {
+        success: decryptedResponse.success,
+        command: command.command,
+        timestamp: Date.now(),
+        data: decryptedResponse.data,
+        error: decryptedResponse.error
+      };
+
+    } catch (error) {
+      console.error('Secure command failed:', error);
+      throw error;
+    }
+  }
+
+  private async sendLegacyCommand(command: CommandPacket): Promise<ResponsePacket> {
+    if (!this.characteristic) {
+      throw new Error('No characteristic available');
+    }
+
+    try {
+      console.log('Sending legacy command:', command.command);
+      
+      const commandData = JSON.stringify(command);
+      const base64Data = Buffer.from(commandData).toString('base64');
+
+      await this.characteristic.writeWithResponse(base64Data);
+      await this.delay(500);
+
+      const response = await this.characteristic.read();
+      const responseData = Buffer.from(response.value!, 'base64').toString();
+      
+      return JSON.parse(responseData) as ResponsePacket;
+    } catch (error) {
+      console.error('Legacy command failed:', error);
+      throw error;
+    }
+  }
+
+  // Configuration methods
+  setPKIMode(enabled: boolean): void {
+    this.usePKI = enabled;
+    console.log('PKI mode:', enabled ? 'enabled' : 'disabled');
+  }
+
+  isPKIEnabled(): boolean {
+    return this.usePKI;
+  }
+
+  hasPKISession(): boolean {
+    return this.pkiSession !== null && this.pkiSession.isValid;
+  }
+
+  getPKISessionInfo(): { sessionId?: string; expiresAt?: Date; isValid?: boolean } {
+    if (!this.pkiSession) {
+      return {};
+    }
+
+    return {
+      sessionId: this.pkiSession.sessionId,
+      expiresAt: this.pkiSession.expiresAt,
+      isValid: this.pkiSession.isValid
+    };
   }
 }
 
