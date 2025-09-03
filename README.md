@@ -37,6 +37,23 @@ TC375 마이크로컨트롤러와 BLE 통신을 통해 차량을 제어하는 �
 npm install
 ```
 
+### Android Debug Keystore 설정
+
+처음 프로젝트를 클론한 경우, Android 빌드를 위한 debug keystore가 필요합니다:
+
+```bash
+# Android 디렉토리로 이동
+cd android/app
+
+# Debug keystore 생성 (이미 존재하면 건너뛰기)
+keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+# 프로젝트 루트로 돌아가기
+cd ../..
+```
+
+**또는** 기존 debug.keystore가 git에 포함되어 있다면 별도 설정 불필요합니다.
+
 ### 1. 로컬 개발 환경
 
 #### 개발 서버 실행
@@ -89,10 +106,49 @@ src/
 
 ## API 및 BLE 설정
 
-### 백엔드 서버 (`src/utils/constants.ts`)
+### 환경별 API 서버 설정
+
+앱은 `src/config/environment.ts`에서 환경별로 다른 API URL을 사용합니다.
+
+#### 환경 전환 방법
 ```typescript
-export const API_BASE_URL = 'http://34.46.208.174:3000/api';
+// src/config/environment.ts
+const CURRENT_ENV: Environment = 'development'; // 여기서 환경 변경
 ```
+
+#### 환경별 API URL 구성
+```typescript
+const configs = {
+  development: {
+    API_BASE_URL: 'http://10.0.2.2:3000/api',      // Android 에뮬레이터용
+    ENVIRONMENT: 'development',
+  },
+  production: {
+    API_BASE_URL: 'http://34.46.208.174:3000/api',  // 클라우드 서버
+    ENVIRONMENT: 'production',
+  },
+};
+```
+
+#### 디바이스별 연결 방법
+
+| 디바이스 타입 | API URL | 비고 |
+|---------------|---------|------|
+| **Android 에뮬레이터** | `http://10.0.2.2:3000/api` | 에뮬레이터에서 호스트 컴퓨터 접근 |
+| **실제 Android 폰** | `http://[컴퓨터IP]:3000/api` | 같은 WiFi 네트워크 필요 |
+| **iOS 시뮬레이터** | `http://localhost:3000/api` | macOS에서만 사용 가능 |
+| **클라우드 서버** | `http://34.46.208.174:3000/api` | 프로덕션 환경 |
+
+#### 컴퓨터 IP 주소 찾기
+```bash
+# Windows
+ipconfig | findstr "IPv4"
+
+# macOS/Linux  
+ifconfig | grep "inet "
+```
+
+**주의**: 실제 디바이스 테스트 시 컴퓨터와 폰이 같은 WiFi 네트워크에 연결되어 있어야 합니다.
 
 ### BLE 설정 (TC375 마이크로컨트롤러)
 ```typescript

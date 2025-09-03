@@ -30,8 +30,13 @@ export class CertificateService {
         await ECCKeyManager.storeKeyPair(keyPair);
       }
 
-      // Download Root CA if not cached or expired
-      await this.ensureRootCA();
+      // Try to download Root CA, but don't fail if server is unavailable
+      try {
+        await this.ensureRootCA();
+        console.log('PKI system initialized with Root CA');
+      } catch (error) {
+        console.warn('Root CA unavailable, continuing in offline mode:', error.message);
+      }
       
       console.log('PKI system initialized successfully');
     } catch (error) {

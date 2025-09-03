@@ -1,4 +1,6 @@
-export const API_BASE_URL = 'http://34.46.208.174:3000/api';
+import Config from '@/config/environment';
+
+export const API_BASE_URL = Config.API_BASE_URL;
 
 export const APP_CONFIG = {
   name: 'Digital Key',

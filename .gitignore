@@ -103,6 +103,8 @@ ios/Flipper/
 # Keystores (security)
 *.keystore
 *.jks
+# But include debug keystore for development
+!android/app/debug.keystore
 
 # Local configuration files
 android/local.properties
@@ -120,3 +122,6 @@ temp/
 
 # backup
 backup/
+
+# Others
+.claude/
