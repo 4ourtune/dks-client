@@ -16,7 +16,7 @@ import { useVehicleStore, useBLEStore, useKeyStore } from "@/stores";
 import { ProtocolHandler } from "@/services/ble";
 import { CertificateService } from "@/services/crypto/CertificateService";
 import { Colors, Fonts, Dimensions } from "@/styles";
-import { PairingStep, VehicleControlRequest, Vehicle } from "@/types";
+import { PairingStep, VehicleControlRequest, Vehicle, VehicleStatus } from "@/types";
 
 const PAIRING_STATUS_MESSAGES: Record<PairingStep, string> = {
   idle: "",
@@ -142,17 +142,36 @@ export const HomeScreen: React.FC = () => {
         const commandPacket = ProtocolHandler.createCommandPacket(command, activeKey.id);
         const response = await sendCommand(commandPacket);
         if (response?.success) {
+          const statusFromVehicleState = (() => {
+            const state = response.vehicleState;
+            if (!state || typeof state !== "object") {
+              return undefined;
+            }
+
+            const nextStatus: Partial<VehicleStatus> = {};
+
+            if (typeof state.locked === "boolean") {
+              nextStatus.doorsLocked = state.locked;
+            }
+            if (typeof state.engineOn === "boolean") {
+              nextStatus.engineRunning = state.engineOn;
+            }
+
+            return Object.keys(nextStatus).length > 0 ? nextStatus : undefined;
+          })();
+
           const raw = response.data;
-          const statusPayload =
+          const legacyStatus =
             raw && typeof raw === "object"
               ? raw.status && typeof raw.status === "object"
                 ? raw.status
                 : raw
               : undefined;
+
           await applyStatusFromBle(
             String(selectedVehicle.id),
             command,
-            statusPayload,
+            statusFromVehicleState ?? legacyStatus,
             response.timestamp,
           );
           await fetchVehicleStatus(String(selectedVehicle.id));

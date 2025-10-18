@@ -68,6 +68,12 @@ export interface ResponsePacket {
   command: string;
   timestamp: number;
   data?: any;
+  vehicleState?: {
+    locked?: boolean;
+    engineOn?: boolean;
+    [key: string]: any;
+  };
+  metadata?: any;
   error?: string;
 }
 

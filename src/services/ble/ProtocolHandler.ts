@@ -71,6 +71,8 @@ export class ProtocolHandler {
         command: String(parsed.command || ""),
         timestamp: Number(parsed.timestamp || Date.now()),
         data: parsed.data,
+        vehicleState: parsed.vehicleState,
+        metadata: parsed.metadata,
         error: parsed.error ? String(parsed.error) : undefined,
       };
     } catch (error) {
