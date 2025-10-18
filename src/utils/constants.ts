@@ -1,19 +1,19 @@
-import Config from '@/config/environment';
+import Config from "@/config/environment";
 
 export const API_BASE_URL = Config.API_BASE_URL;
 
 export const APP_CONFIG = {
-  name: 'Digital Key',
-  version: '1.0.0',
+  name: "Digital Key",
+  version: "1.0.0",
   buildNumber: 1,
 };
 
 export const STORAGE_KEYS = {
-  AUTH_TOKEN: 'auth_token',
-  REFRESH_TOKEN: 'refresh_token',
-  USER_DATA: 'user_data',
-  SELECTED_VEHICLE: 'selected_vehicle',
-  APP_SETTINGS: 'app_settings',
+  AUTH_TOKEN: "auth_token",
+  REFRESH_TOKEN: "refresh_token",
+  USER_DATA: "user_data",
+  SELECTED_VEHICLE: "selected_vehicle",
+  APP_SETTINGS: "app_settings",
 };
 
 export const API_TIMEOUTS = {
@@ -53,51 +53,47 @@ export const VALIDATION_RULES = {
 };
 
 export const ERROR_MESSAGES = {
-  NETWORK_ERROR: 'Network error. Please check your connection.',
-  TIMEOUT_ERROR: 'Request timed out. Please try again.',
-  UNAUTHORIZED: 'Session expired. Please log in again.',
-  FORBIDDEN: 'Access denied.',
-  NOT_FOUND: 'Resource not found.',
-  SERVER_ERROR: 'Server error. Please try again later.',
-  VALIDATION_ERROR: 'Invalid input. Please check your data.',
-  BLE_ERROR: 'Bluetooth connection error.',
-  PERMISSION_ERROR: 'Permission required to proceed.',
+  NETWORK_ERROR: "Network error. Please check your connection.",
+  TIMEOUT_ERROR: "Request timed out. Please try again.",
+  UNAUTHORIZED: "Session expired. Please log in again.",
+  FORBIDDEN: "Access denied.",
+  NOT_FOUND: "Resource not found.",
+  SERVER_ERROR: "Server error. Please try again later.",
+  VALIDATION_ERROR: "Invalid input. Please check your data.",
+  BLE_ERROR: "Bluetooth connection error.",
+  PERMISSION_ERROR: "Permission required to proceed.",
 };
 
 export const VEHICLE_COMMANDS = {
-  UNLOCK: 'UNLOCK',
-  LOCK: 'LOCK',
-  START: 'START',
-  STOP: 'STOP',
-  TRUNK: 'TRUNK',
-  STATUS: 'STATUS',
+  UNLOCK: "UNLOCK",
+  LOCK: "LOCK",
+  START: "START",
 } as const;
 
 export const KEY_PERMISSIONS = {
-  UNLOCK: 'unlock',
-  LOCK: 'lock',
-  START: 'start',
-  TRUNK: 'trunk',
+  UNLOCK: "unlock",
+  LOCK: "lock",
+  START_ENGINE: "startEngine",
 } as const;
 
 export const BLE_CONFIG = {
-  SERVICE_UUID: '12345678-1234-1234-1234-123456789abc',
-  CHAR_UUID: '87654321-4321-4321-4321-cba987654321',
-  DEVICE_NAME_PREFIX: 'TC375',
+  SERVICE_UUID: "12345678-1234-1234-1234-123456789abc",
+  CHAR_UUID: "87654321-4321-4321-4321-cba987654321",
+  DEVICE_NAME_PREFIX: "DEVICE",
 };
 
 export const PERMISSIONS_ANDROID = [
-  'android.permission.BLUETOOTH',
-  'android.permission.BLUETOOTH_ADMIN',
-  'android.permission.ACCESS_FINE_LOCATION',
-  'android.permission.BLUETOOTH_SCAN',
-  'android.permission.BLUETOOTH_CONNECT',
+  "android.permission.BLUETOOTH",
+  "android.permission.BLUETOOTH_ADMIN",
+  "android.permission.ACCESS_FINE_LOCATION",
+  "android.permission.BLUETOOTH_SCAN",
+  "android.permission.BLUETOOTH_CONNECT",
 ];
 
 export const PERMISSIONS_IOS = [
-  'NSBluetoothAlwaysUsageDescription',
-  'NSBluetoothPeripheralUsageDescription',
-  'NSLocationWhenInUseUsageDescription',
+  "NSBluetoothAlwaysUsageDescription",
+  "NSBluetoothPeripheralUsageDescription",
+  "NSLocationWhenInUseUsageDescription",
 ];
 
 export const LOG_LEVELS = {

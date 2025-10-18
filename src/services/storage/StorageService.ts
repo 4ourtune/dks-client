@@ -1,43 +1,48 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { BLEDevice, VehicleBLERegistration } from "@/types";
 
 const KEYS = {
-  AUTH_TOKEN: 'auth_token',
-  REFRESH_TOKEN: 'refresh_token',
-  USER_DATA: 'user_data',
-  SELECTED_VEHICLE: 'selected_vehicle',
-  APP_SETTINGS: 'app_settings',
-  BLE_DEVICES: 'ble_devices',
-  CACHED_VEHICLES: 'cached_vehicles',
-  CACHED_KEYS: 'cached_keys',
+  AUTH_TOKEN: "auth_token",
+  REFRESH_TOKEN: "refresh_token",
+  USER_DATA: "user_data",
+  SELECTED_VEHICLE: "selected_vehicle",
+  APP_SETTINGS: "app_settings",
+  BLE_DEVICES: "ble_devices",
+  BLE_REGISTRATIONS: "ble_registrations",
+  CACHED_VEHICLES: "cached_vehicles",
+  CACHED_KEYS: "cached_keys",
 };
 
 export class StorageService {
   static async setTokens(token: string, refreshToken: string): Promise<void> {
     try {
       if (!token || !refreshToken) {
-        throw new Error('Token and refresh token are required');
+        throw new Error("Token and refresh token are required");
       }
-      
+
       await Promise.all([
         AsyncStorage.setItem(KEYS.AUTH_TOKEN, token),
         AsyncStorage.setItem(KEYS.REFRESH_TOKEN, refreshToken),
       ]);
     } catch (error) {
-      console.error('Failed to save tokens:', error);
-      throw new Error('Failed to save authentication tokens');
+      console.error("Failed to save tokens:", error);
+      throw new Error("Failed to save authentication tokens");
     }
   }
 
-  static async getTokens(): Promise<{ token: string | null; refreshToken: string | null }> {
+  static async getTokens(): Promise<{
+    token: string | null;
+    refreshToken: string | null;
+  }> {
     try {
       const [token, refreshToken] = await Promise.all([
         AsyncStorage.getItem(KEYS.AUTH_TOKEN),
         AsyncStorage.getItem(KEYS.REFRESH_TOKEN),
       ]);
-      
+
       return { token, refreshToken };
     } catch (error) {
-      console.error('Failed to get tokens:', error);
+      console.error("Failed to get tokens:", error);
       return { token: null, refreshToken: null };
     }
   }
@@ -50,8 +55,8 @@ export class StorageService {
         AsyncStorage.removeItem(KEYS.USER_DATA),
       ]);
     } catch (error) {
-      console.error('Failed to clear tokens:', error);
-      throw new Error('Failed to clear authentication data');
+      console.error("Failed to clear tokens:", error);
+      throw new Error("Failed to clear authentication data");
     }
   }
 
@@ -59,8 +64,8 @@ export class StorageService {
     try {
       await AsyncStorage.setItem(KEYS.USER_DATA, JSON.stringify(userData));
     } catch (error) {
-      console.error('Failed to save user data:', error);
-      throw new Error('Failed to save user data');
+      console.error("Failed to save user data:", error);
+      throw new Error("Failed to save user data");
     }
   }
 
@@ -69,7 +74,7 @@ export class StorageService {
       const data = await AsyncStorage.getItem(KEYS.USER_DATA);
       return data ? JSON.parse(data) : null;
     } catch (error) {
-      console.error('Failed to get user data:', error);
+      console.error("Failed to get user data:", error);
       return null;
     }
   }
@@ -78,8 +83,8 @@ export class StorageService {
     try {
       await AsyncStorage.setItem(KEYS.SELECTED_VEHICLE, vehicleId);
     } catch (error) {
-      console.error('Failed to save selected vehicle:', error);
-      throw new Error('Failed to save selected vehicle');
+      console.error("Failed to save selected vehicle:", error);
+      throw new Error("Failed to save selected vehicle");
     }
   }
 
@@ -87,7 +92,7 @@ export class StorageService {
     try {
       return await AsyncStorage.getItem(KEYS.SELECTED_VEHICLE);
     } catch (error) {
-      console.error('Failed to get selected vehicle:', error);
+      console.error("Failed to get selected vehicle:", error);
       return null;
     }
   }
@@ -96,7 +101,7 @@ export class StorageService {
     try {
       await AsyncStorage.removeItem(KEYS.SELECTED_VEHICLE);
     } catch (error) {
-      console.error('Failed to remove selected vehicle:', error);
+      console.error("Failed to remove selected vehicle:", error);
     }
   }
 
@@ -104,8 +109,8 @@ export class StorageService {
     try {
       await AsyncStorage.setItem(KEYS.APP_SETTINGS, JSON.stringify(settings));
     } catch (error) {
-      console.error('Failed to save app settings:', error);
-      throw new Error('Failed to save app settings');
+      console.error("Failed to save app settings:", error);
+      throw new Error("Failed to save app settings");
     }
   }
 
@@ -114,27 +119,173 @@ export class StorageService {
       const settings = await AsyncStorage.getItem(KEYS.APP_SETTINGS);
       return settings ? JSON.parse(settings) : null;
     } catch (error) {
-      console.error('Failed to get app settings:', error);
+      console.error("Failed to get app settings:", error);
       return null;
+    }
+  }
+
+  private static async readVehicleRegistrations(): Promise<Record<string, VehicleBLERegistration>> {
+    try {
+      const stored = await AsyncStorage.getItem(KEYS.BLE_REGISTRATIONS);
+      if (stored) {
+        return JSON.parse(stored) as Record<string, VehicleBLERegistration>;
+      }
+
+      const legacy = await AsyncStorage.getItem(KEYS.BLE_DEVICES);
+      if (!legacy) {
+        return {};
+      }
+
+      const legacyEntries = JSON.parse(legacy) as Array<{ vehicleId: string; device: BLEDevice }>;
+      const registrations: Record<string, VehicleBLERegistration> = {};
+      legacyEntries.forEach((entry) => {
+        if (entry?.vehicleId && entry?.device) {
+          const id = String(entry.vehicleId);
+          registrations[id] = {
+            vehicleId: id,
+            device: entry.device,
+            updatedAt: Date.now(),
+          };
+        }
+      });
+
+      await AsyncStorage.setItem(KEYS.BLE_REGISTRATIONS, JSON.stringify(registrations));
+      return registrations;
+    } catch (error) {
+      console.error("Failed to read BLE registrations:", error);
+      return {};
+    }
+  }
+
+  private static async persistVehicleRegistrations(
+    registrations: Record<string, VehicleBLERegistration>,
+  ): Promise<void> {
+    try {
+      if (Object.keys(registrations).length === 0) {
+        await AsyncStorage.removeItem(KEYS.BLE_REGISTRATIONS);
+        await AsyncStorage.removeItem(KEYS.BLE_DEVICES);
+        return;
+      }
+
+      await AsyncStorage.setItem(KEYS.BLE_REGISTRATIONS, JSON.stringify(registrations));
+
+      const legacy = Object.values(registrations).map((item) => ({
+        vehicleId: item.vehicleId,
+        device: item.device,
+      }));
+      await AsyncStorage.setItem(KEYS.BLE_DEVICES, JSON.stringify(legacy));
+    } catch (error) {
+      console.error("Failed to persist BLE registrations:", error);
+      throw error;
+    }
+  }
+
+  static async getVehicleRegistrations(): Promise<Record<string, VehicleBLERegistration>> {
+    return await this.readVehicleRegistrations();
+  }
+
+  static async getVehicleRegistration(
+    vehicleId: string,
+  ): Promise<VehicleBLERegistration | undefined> {
+    const registrations = await this.readVehicleRegistrations();
+    return registrations[String(vehicleId)];
+  }
+
+  static async setVehicleRegistration(
+    vehicleId: string,
+    registrationUpdate: Partial<Omit<VehicleBLERegistration, "vehicleId">> & {
+      device?: BLEDevice;
+    },
+  ): Promise<void> {
+    try {
+      const id = String(vehicleId);
+      const registrations = await this.readVehicleRegistrations();
+      const existing = registrations[id];
+
+      if (!existing && !registrationUpdate.device) {
+        // Nothing to persist yet; wait until we have device context.
+        return;
+      }
+
+      const device = registrationUpdate.device ?? existing?.device;
+      if (!device) {
+        // Existing registration might exist without device; keep previous record.
+        return;
+      }
+
+      const next: VehicleBLERegistration = {
+        vehicleId: id,
+        device,
+        pairingToken: registrationUpdate.pairingToken ?? existing?.pairingToken,
+        certificate: registrationUpdate.certificate ?? existing?.certificate,
+        session: registrationUpdate.session ?? existing?.session,
+        updatedAt: registrationUpdate.updatedAt ?? Date.now(),
+      };
+
+      registrations[id] = next;
+      await this.persistVehicleRegistrations(registrations);
+    } catch (error) {
+      console.error("Failed to save BLE registration:", error);
+      throw error;
+    }
+  }
+
+  static async removeVehicleRegistration(vehicleId: string): Promise<void> {
+    try {
+      const id = String(vehicleId);
+      const registrations = await this.readVehicleRegistrations();
+      if (registrations[id]) {
+        delete registrations[id];
+        await this.persistVehicleRegistrations(registrations);
+      }
+    } catch (error) {
+      console.error("Failed to remove BLE registration:", error);
     }
   }
 
   static async setBLEDevices(devices: any[]): Promise<void> {
     try {
-      await AsyncStorage.setItem(KEYS.BLE_DEVICES, JSON.stringify(devices));
+      const registrations: Record<string, VehicleBLERegistration> = {};
+      devices.forEach((entry) => {
+        if (entry?.vehicleId && entry?.device) {
+          const id = String(entry.vehicleId);
+          registrations[id] = {
+            vehicleId: id,
+            device: entry.device,
+            updatedAt: Date.now(),
+          };
+        }
+      });
+      await this.persistVehicleRegistrations(registrations);
     } catch (error) {
-      console.error('Failed to save BLE devices:', error);
+      console.error("Failed to save BLE devices:", error);
     }
   }
 
   static async getBLEDevices(): Promise<any[]> {
     try {
-      const devices = await AsyncStorage.getItem(KEYS.BLE_DEVICES);
-      return devices ? JSON.parse(devices) : [];
+      const registrations = await this.readVehicleRegistrations();
+      return Object.values(registrations).map((registration) => ({
+        vehicleId: registration.vehicleId,
+        device: registration.device,
+      }));
     } catch (error) {
-      console.error('Failed to get BLE devices:', error);
+      console.error("Failed to get BLE devices:", error);
       return [];
     }
+  }
+
+  static async setVehicleBLEDevice(vehicleId: string, device: BLEDevice): Promise<void> {
+    await this.setVehicleRegistration(vehicleId, { device });
+  }
+
+  static async getVehicleBLEDevice(vehicleId: string): Promise<BLEDevice | null> {
+    const registration = await this.getVehicleRegistration(vehicleId);
+    return registration?.device ?? null;
+  }
+
+  static async removeVehicleBLEDevice(vehicleId: string): Promise<void> {
+    await this.removeVehicleRegistration(vehicleId);
   }
 
   static async cacheVehicles(vehicles: any[]): Promise<void> {
@@ -145,18 +296,20 @@ export class StorageService {
       };
       await AsyncStorage.setItem(KEYS.CACHED_VEHICLES, JSON.stringify(cacheData));
     } catch (error) {
-      console.error('Failed to cache vehicles:', error);
+      console.error("Failed to cache vehicles:", error);
     }
   }
 
   static async getCachedVehicles(maxAgeMs: number = 300000): Promise<any[] | null> {
     try {
       const cached = await AsyncStorage.getItem(KEYS.CACHED_VEHICLES);
-      if (!cached) return null;
+      if (!cached) {
+        return null;
+      }
 
       const cacheData = JSON.parse(cached);
       const age = Date.now() - cacheData.timestamp;
-      
+
       if (age > maxAgeMs) {
         await AsyncStorage.removeItem(KEYS.CACHED_VEHICLES);
         return null;
@@ -164,7 +317,7 @@ export class StorageService {
 
       return cacheData.vehicles;
     } catch (error) {
-      console.error('Failed to get cached vehicles:', error);
+      console.error("Failed to get cached vehicles:", error);
       return null;
     }
   }
@@ -173,30 +326,34 @@ export class StorageService {
     try {
       const cached = await AsyncStorage.getItem(KEYS.CACHED_KEYS);
       const allCached = cached ? JSON.parse(cached) : {};
-      
+
       allCached[vehicleId] = {
         keys,
         timestamp: Date.now(),
       };
-      
+
       await AsyncStorage.setItem(KEYS.CACHED_KEYS, JSON.stringify(allCached));
     } catch (error) {
-      console.error('Failed to cache keys:', error);
+      console.error("Failed to cache keys:", error);
     }
   }
 
   static async getCachedKeys(vehicleId: string, maxAgeMs: number = 300000): Promise<any[] | null> {
     try {
       const cached = await AsyncStorage.getItem(KEYS.CACHED_KEYS);
-      if (!cached) return null;
+      if (!cached) {
+        return null;
+      }
 
       const allCached = JSON.parse(cached);
       const vehicleCache = allCached[vehicleId];
-      
-      if (!vehicleCache) return null;
+
+      if (!vehicleCache) {
+        return null;
+      }
 
       const age = Date.now() - vehicleCache.timestamp;
-      
+
       if (age > maxAgeMs) {
         delete allCached[vehicleId];
         await AsyncStorage.setItem(KEYS.CACHED_KEYS, JSON.stringify(allCached));
@@ -205,7 +362,7 @@ export class StorageService {
 
       return vehicleCache.keys;
     } catch (error) {
-      console.error('Failed to get cached keys:', error);
+      console.error("Failed to get cached keys:", error);
       return null;
     }
   }
@@ -216,9 +373,10 @@ export class StorageService {
         AsyncStorage.removeItem(KEYS.CACHED_VEHICLES),
         AsyncStorage.removeItem(KEYS.CACHED_KEYS),
         AsyncStorage.removeItem(KEYS.BLE_DEVICES),
+        AsyncStorage.removeItem(KEYS.BLE_REGISTRATIONS),
       ]);
     } catch (error) {
-      console.error('Failed to clear cache:', error);
+      console.error("Failed to clear cache:", error);
     }
   }
 
@@ -226,8 +384,8 @@ export class StorageService {
     try {
       await AsyncStorage.clear();
     } catch (error) {
-      console.error('Failed to clear all data:', error);
-      throw new Error('Failed to clear all application data');
+      console.error("Failed to clear all data:", error);
+      throw new Error("Failed to clear all application data");
     }
   }
 
@@ -235,17 +393,17 @@ export class StorageService {
     try {
       const keys = await AsyncStorage.getAllKeys();
       const items = await AsyncStorage.multiGet(keys);
-      
+
       let totalSize = 0;
       items.forEach(([key, value]) => {
         if (value) {
           totalSize += key.length + value.length;
         }
       });
-      
+
       return totalSize;
     } catch (error) {
-      console.error('Failed to get storage size:', error);
+      console.error("Failed to get storage size:", error);
       return 0;
     }
   }

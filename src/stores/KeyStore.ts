@@ -1,6 +1,6 @@
-import { create } from 'zustand';
-import { KeyState, DigitalKey, KeyCreateRequest, KeyUpdateRequest } from '@/types';
-import { KeyService } from '@/services/api/KeyService';
+import { create } from "zustand";
+import { KeyState, DigitalKey, KeyCreateRequest, KeyUpdateRequest } from "@/types";
+import { KeyService } from "@/services/api/KeyService";
 
 interface KeyStore extends KeyState {
   fetchKeys: (vehicleId?: string) => Promise<void>;
@@ -8,11 +8,11 @@ interface KeyStore extends KeyState {
   updateKey: (keyId: string, updates: KeyUpdateRequest) => Promise<void>;
   deleteKey: (keyId: string) => Promise<void>;
   selectKey: (key: DigitalKey | null) => void;
-  validateKey: (keyId: string, command: string) => Promise<boolean>;
+  validateKey: (keyId: string, command: "unlock" | "lock" | "startEngine") => Promise<boolean>;
   clearError: () => void;
 }
 
-export const useKeyStore = create<KeyStore>((set, get) => ({
+export const useKeyStore = create<KeyStore>((set) => ({
   keys: [],
   selectedKey: null,
   isLoading: false,
@@ -21,16 +21,17 @@ export const useKeyStore = create<KeyStore>((set, get) => ({
   fetchKeys: async (vehicleId?: string) => {
     try {
       set({ isLoading: true, error: null });
-      
+
       const keys = await KeyService.getKeys(vehicleId);
-      
+      const activeKey = keys.find((key) => key.isActive);
       set({
         keys,
+        selectedKey: activeKey ?? (keys.length > 0 ? keys[0] : null),
         isLoading: false,
       });
     } catch (error: any) {
       set({
-        error: error.message || 'Failed to fetch keys',
+        error: error.message || "Failed to fetch keys",
         isLoading: false,
       });
       throw error;
@@ -40,18 +41,18 @@ export const useKeyStore = create<KeyStore>((set, get) => ({
   createKey: async (keyData: KeyCreateRequest) => {
     try {
       set({ isLoading: true, error: null });
-      
+
       const newKey = await KeyService.createKey(keyData);
-      
-      set(state => ({
+
+      set((state) => ({
         keys: [...state.keys, newKey],
         isLoading: false,
       }));
-      
+
       return newKey;
     } catch (error: any) {
       set({
-        error: error.message || 'Failed to create key',
+        error: error.message || "Failed to create key",
         isLoading: false,
       });
       throw error;
@@ -61,21 +62,17 @@ export const useKeyStore = create<KeyStore>((set, get) => ({
   updateKey: async (keyId: string, updates: KeyUpdateRequest) => {
     try {
       set({ isLoading: true, error: null });
-      
+
       const updatedKey = await KeyService.updateKey(keyId, updates);
-      
-      set(state => ({
-        keys: state.keys.map(k => 
-          k.id === keyId ? updatedKey : k
-        ),
-        selectedKey: state.selectedKey?.id === keyId 
-          ? updatedKey 
-          : state.selectedKey,
+
+      set((state) => ({
+        keys: state.keys.map((k) => (k.id === keyId ? updatedKey : k)),
+        selectedKey: state.selectedKey?.id === keyId ? updatedKey : state.selectedKey,
         isLoading: false,
       }));
     } catch (error: any) {
       set({
-        error: error.message || 'Failed to update key',
+        error: error.message || "Failed to update key",
         isLoading: false,
       });
       throw error;
@@ -85,19 +82,17 @@ export const useKeyStore = create<KeyStore>((set, get) => ({
   deleteKey: async (keyId: string) => {
     try {
       set({ isLoading: true, error: null });
-      
+
       await KeyService.deleteKey(keyId);
-      
-      set(state => ({
-        keys: state.keys.filter(k => k.id !== keyId),
-        selectedKey: state.selectedKey?.id === keyId 
-          ? null 
-          : state.selectedKey,
+
+      set((state) => ({
+        keys: state.keys.filter((k) => k.id !== keyId),
+        selectedKey: state.selectedKey?.id === keyId ? null : state.selectedKey,
         isLoading: false,
       }));
     } catch (error: any) {
       set({
-        error: error.message || 'Failed to delete key',
+        error: error.message || "Failed to delete key",
         isLoading: false,
       });
       throw error;
@@ -108,18 +103,17 @@ export const useKeyStore = create<KeyStore>((set, get) => ({
     set({ selectedKey: key });
   },
 
-  validateKey: async (keyId: string, command: string) => {
+  validateKey: async (keyId: string, command: "unlock" | "lock" | "startEngine") => {
     try {
       const response = await KeyService.validateKey(keyId, {
-        keyId,
         command,
         timestamp: Date.now(),
       });
-      
+
       return response.isValid;
     } catch (error: any) {
       set({
-        error: error.message || 'Failed to validate key',
+        error: error.message || "Failed to validate key",
       });
       return false;
     }

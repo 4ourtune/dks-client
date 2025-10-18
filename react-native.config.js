@@ -1,9 +1,9 @@
 module.exports = {
   project: {
     android: {
-      sourceDir: './android',
-      appName: 'app',
+      sourceDir: "./android",
+      appName: "app",
     },
   },
-  assets: ['./src/assets/fonts/'],
+  assets: ["./src/assets/fonts/"],
 };

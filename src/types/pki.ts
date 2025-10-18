@@ -15,10 +15,11 @@ export interface UserCertificate extends Certificate {
   permissions: {
     unlock: boolean;
     lock: boolean;
-    engine_on: boolean;
-    trunk?: boolean;
+    startEngine: boolean;
   };
   userId: string;
+  keyId?: string;
+  allowedVehicles?: number[];
 }
 
 export interface VehicleCertificate extends Certificate {
@@ -34,7 +35,7 @@ export interface RootCACertificate extends Certificate {
 export interface ECCKeyPair {
   publicKey: string;
   privateKey: string;
-  curve: 'secp256r1' | 'secp256k1';
+  curve: "secp256r1" | "secp256k1";
 }
 
 export interface PKISession {
@@ -42,6 +43,9 @@ export interface PKISession {
   sessionKey: string;
   vehiclePublicKey: string;
   userPublicKey: string;
+  vehicleId?: number;
+  clientNonce?: string;
+  serverNonce?: string;
   createdAt: Date;
   expiresAt: Date;
   isValid: boolean;
@@ -71,8 +75,7 @@ export interface CertificateRequest {
   permissions: {
     unlock: boolean;
     lock: boolean;
-    engine_on: boolean;
-    trunk?: boolean;
+    startEngine: boolean;
   };
 }
 

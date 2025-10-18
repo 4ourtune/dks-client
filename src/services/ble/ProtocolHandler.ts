@@ -1,10 +1,10 @@
-import { CommandPacket, ResponsePacket } from '@/types';
-import { CryptoService } from './CryptoService';
+import { CommandPacket, ResponsePacket } from "@/types";
+import { CryptoService } from "./CryptoService";
 
 export class ProtocolHandler {
   static createCommandPacket(
-    command: 'UNLOCK' | 'LOCK' | 'START' | 'STOP' | 'STATUS' | 'TRUNK',
-    keyId: string
+    command: "UNLOCK" | "LOCK" | "START" | "STOP" | "STATUS" | "TRUNK",
+    keyId: string,
   ): CommandPacket {
     const timestamp = Date.now();
     const commandData = {
@@ -24,7 +24,7 @@ export class ProtocolHandler {
   }
 
   static validateResponse(response: ResponsePacket, originalCommand: CommandPacket): boolean {
-    if (!response || typeof response !== 'object') {
+    if (!response || typeof response !== "object") {
       return false;
     }
 
@@ -32,7 +32,7 @@ export class ProtocolHandler {
       return false;
     }
 
-    if (!response.timestamp || typeof response.timestamp !== 'number') {
+    if (!response.timestamp || typeof response.timestamp !== "number") {
       return false;
     }
 
@@ -61,14 +61,14 @@ export class ProtocolHandler {
   static parseResponse(rawData: string): ResponsePacket {
     try {
       const parsed = JSON.parse(rawData);
-      
-      if (!parsed || typeof parsed !== 'object') {
-        throw new Error('Invalid response format');
+
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error("Invalid response format");
       }
 
       return {
         success: Boolean(parsed.success),
-        command: String(parsed.command || ''),
+        command: String(parsed.command || ""),
         timestamp: Number(parsed.timestamp || Date.now()),
         data: parsed.data,
         error: parsed.error ? String(parsed.error) : undefined,
@@ -97,6 +97,6 @@ export class ProtocolHandler {
       responseTime: response ? response.timestamp - command.timestamp : null,
     };
 
-    console.log('BLE Command Log:', logEntry);
+    console.log("BLE Command Log:", logEntry);
   }
 }

@@ -1,8 +1,11 @@
-export * from './auth';
-export * from './vehicle';
-export * from './key';
-export * from './ble';
-export * from './pki';
+import type { ParamListBase } from "@react-navigation/native";
+
+export * from "./auth";
+export * from "./vehicle";
+export * from "./key";
+export * from "./ble";
+export * from "./pki";
+export * from "./pairing";
 
 export interface ApiResponse<T> {
   data: T;
@@ -28,13 +31,14 @@ export interface LoadingState {
   [key: string]: boolean;
 }
 
-export interface NavigationParams {
+export interface NavigationParams extends ParamListBase {
   Home: undefined;
   Login: undefined;
   Register: undefined;
   Profile: undefined;
   VehicleList: undefined;
   VehicleRegister: undefined;
+  AddVehicle: undefined;
   VehicleControl: { vehicleId: string };
   VehicleDetail: { vehicleId: string };
   KeyList: { vehicleId: string };

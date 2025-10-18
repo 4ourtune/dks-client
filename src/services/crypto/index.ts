@@ -1,2 +1,2 @@
-export { ECCKeyManager } from './ECCKeyManager';
-export { CertificateService } from './CertificateService';
+export { ECCKeyManager } from "./ECCKeyManager";
+export { CertificateService } from "./CertificateService";

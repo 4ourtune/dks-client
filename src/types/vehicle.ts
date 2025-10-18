@@ -3,7 +3,7 @@ export interface Vehicle {
   userId: string;
   vin: string;
   model: string;
-  tc375DeviceId: string;
+  device_id: string;
   name?: string;
   createdAt: string;
   updatedAt: string;
@@ -12,15 +12,14 @@ export interface Vehicle {
 export interface VehicleStatus {
   doorsLocked: boolean;
   engineRunning: boolean;
-  battery: number;
-  lastUpdated: string;
-  connected: boolean;
+  lastUpdated?: string;
+  connected?: boolean;
 }
 
 export interface VehicleCreateRequest {
   vin: string;
   model: string;
-  tc375DeviceId: string;
+  device_id: string;
   name?: string;
 }
 
@@ -30,7 +29,7 @@ export interface VehicleUpdateRequest {
 }
 
 export interface VehicleControlRequest {
-  command: 'UNLOCK' | 'LOCK' | 'START' | 'STOP' | 'TRUNK';
+  command: "UNLOCK" | "LOCK" | "START";
   keyId: string;
 }
 
@@ -38,6 +37,7 @@ export interface VehicleControlResponse {
   success: boolean;
   message: string;
   timestamp: string;
+  status?: Partial<VehicleStatus>;
 }
 
 export interface VehicleLog {

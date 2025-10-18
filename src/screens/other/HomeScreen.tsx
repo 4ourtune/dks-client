@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -7,64 +7,113 @@ import {
   TouchableOpacity,
   RefreshControl,
   Alert,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import Icon from 'react-native-vector-icons/MaterialIcons';
-import { Button, Header, LoadingSpinner } from '@/components/common';
-import { useVehicleStore, useBLEStore, useKeyStore } from '@/stores';
-import { Colors, Fonts, Dimensions } from '@/styles';
-import { VEHICLE_COMMANDS, API_BASE_URL } from '@/utils/constants';
-import { ProtocolHandler } from '@/services/ble';
-import axios from 'axios';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useNavigation } from "@react-navigation/native";
+import Icon from "react-native-vector-icons/MaterialIcons";
+import { Button, Header, LoadingSpinner } from "@/components/common";
+import { useVehicleStore, useBLEStore, useKeyStore } from "@/stores";
+import { ProtocolHandler } from "@/services/ble";
+import { CertificateService } from "@/services/crypto/CertificateService";
+import { Colors, Fonts, Dimensions } from "@/styles";
+import { PairingStep, VehicleControlRequest, Vehicle } from "@/types";
+
+const PAIRING_STATUS_MESSAGES: Record<PairingStep, string> = {
+  idle: "",
+  scanning: "Scanning for nearby vehicles...",
+  deviceSelected: "Device selected. Waiting to connect...",
+  connecting: "Connecting to the vehicle...",
+  challenge: "Challenge received from the vehicle.",
+  registering: "Creating a pairing session with the server...",
+  completing: "Finalizing pairing with the vehicle...",
+  completed: "Pairing completed successfully.",
+  error: "Pairing failed. Please try again.",
+};
 
 export const HomeScreen: React.FC = () => {
-  const navigation = useNavigation();
-  const { 
-    selectedVehicle, 
-    vehicleStatuses, 
-    fetchVehicles, 
-    controlVehicle, 
+  const navigation = useNavigation<any>();
+  const {
+    vehicles,
+    selectedVehicle,
+    vehicleStatuses,
+    fetchVehicles,
+    selectVehicle,
+    controlVehicle,
+    fetchVehicleStatus,
+    applyStatusFromBle,
     isLoading,
-    loadSelectedVehicle 
+    loadSelectedVehicle,
   } = useVehicleStore();
-  
-  const { 
-    connection, 
-    sendCommand, 
-    connectToDevice, 
-    startScan,
-    initialize: initializeBLE 
+
+  const {
+    connection,
+    pairing,
+    sendCommand,
+    initialize: initializeBLE,
+    startPairing,
+    selectPairingDevice,
+    cancelPairing,
+    resetPairing,
   } = useBLEStore();
-  
-  const { keys, fetchKeys } = useKeyStore();
-  
+
+  const { keys, selectedKey, fetchKeys } = useKeyStore();
+
   const [refreshing, setRefreshing] = useState(false);
   const [commandLoading, setCommandLoading] = useState<string | null>(null);
-  const [testLoading, setTestLoading] = useState(false);
 
-  const currentStatus = selectedVehicle ? vehicleStatuses[selectedVehicle.id] : null;
-  const activeKey = keys.find(key => key.vehicleId === selectedVehicle?.id && key.isActive);
+  const selectedVehicleId = selectedVehicle ? String(selectedVehicle.id) : null;
+  const defaultVehicleStatus = useMemo(
+    () => ({
+      doorsLocked: false,
+      engineRunning: false,
+    }),
+    [],
+  );
+  const currentStatus =
+    selectedVehicleId && vehicleStatuses[selectedVehicleId]
+      ? vehicleStatuses[selectedVehicleId]
+      : defaultVehicleStatus;
+  const activeKey = useMemo(() => {
+    if (!selectedVehicleId) {
+      return undefined;
+    }
+
+    const primary = keys.find((key) => key.vehicleId === selectedVehicleId && key.isActive);
+    if (primary) {
+      return primary;
+    }
+
+    if (selectedKey && selectedKey.vehicleId === selectedVehicleId) {
+      return selectedKey;
+    }
+
+    return keys.find((key) => key.vehicleId === selectedVehicleId);
+  }, [keys, selectedKey, selectedVehicleId]);
+
+  const pairingStep = pairing.step;
+  const pairingMessage = PAIRING_STATUS_MESSAGES[pairingStep];
+  const pairingContext = pairing.context;
+
+  const loadData = useCallback(async () => {
+    try {
+      const vehiclesList = await fetchVehicles();
+      const loadedVehicle = await loadSelectedVehicle();
+      const vehicleIdForKeys = loadedVehicle?.id;
+
+      if (vehicleIdForKeys) {
+        await fetchKeys(String(vehicleIdForKeys));
+      } else if (vehiclesList.length === 0) {
+        await fetchKeys();
+      }
+    } catch (error) {
+      console.error("Failed to load data:", error);
+    }
+  }, [fetchVehicles, loadSelectedVehicle, fetchKeys]);
 
   useEffect(() => {
     loadData();
     initializeBLE();
-  }, []);
-
-  const loadData = async () => {
-    try {
-      await Promise.all([
-        fetchVehicles(),
-        loadSelectedVehicle(),
-      ]);
-      
-      if (selectedVehicle) {
-        await fetchKeys(selectedVehicle.id);
-      }
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    }
-  };
+  }, [initializeBLE, loadData]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -72,9 +121,9 @@ export const HomeScreen: React.FC = () => {
     setRefreshing(false);
   };
 
-  const handleVehicleCommand = async (command: keyof typeof VEHICLE_COMMANDS) => {
+  const handleVehicleCommand = async (command: VehicleControlRequest["command"]) => {
     if (!selectedVehicle || !activeKey) {
-      Alert.alert('Error', 'No vehicle or key selected');
+      Alert.alert("Error", "No vehicle or key selected");
       return;
     }
 
@@ -82,314 +131,483 @@ export const HomeScreen: React.FC = () => {
 
     try {
       if (connection.isConnected) {
+        try {
+          await CertificateService.ensureUserCertificate(
+            Number(selectedVehicleId),
+            activeKey.permissions,
+          );
+        } catch (certError) {
+          console.warn("Failed to ensure user certificate:", certError);
+        }
         const commandPacket = ProtocolHandler.createCommandPacket(command, activeKey.id);
-        await sendCommand(commandPacket);
+        const response = await sendCommand(commandPacket);
+        if (response?.success) {
+          const raw = response.data;
+          const statusPayload =
+            raw && typeof raw === "object"
+              ? raw.status && typeof raw.status === "object"
+                ? raw.status
+                : raw
+              : undefined;
+          await applyStatusFromBle(
+            String(selectedVehicle.id),
+            command,
+            statusPayload,
+            response.timestamp,
+          );
+          await fetchVehicleStatus(String(selectedVehicle.id));
+        }
       } else {
         await controlVehicle(selectedVehicle.id, {
           command,
           keyId: activeKey.id,
         });
+        await fetchVehicleStatus(String(selectedVehicle.id));
       }
-      
-      Alert.alert('Success', `${command.toLowerCase()} command sent successfully`);
     } catch (error: any) {
-      Alert.alert('Error', error.message || `Failed to send ${command.toLowerCase()} command`);
+      Alert.alert("Error", error.message || `Failed to send ${command.toLowerCase()} command`);
     } finally {
       setCommandLoading(null);
     }
   };
 
-  const handleBLEConnection = async () => {
+  const handleVehicleQuickSelect = async (vehicle: Vehicle) => {
     try {
-      if (connection.isConnected) {
-        // Already connected, show status
-        return;
-      }
-      
-      await startScan();
-      // For demo purposes, auto-connect to first discovered device
-      if (connection.discoveredDevices.length > 0) {
-        await connectToDevice(connection.discoveredDevices[0].id);
-      }
-    } catch (error: any) {
-      Alert.alert('BLE Error', error.message || 'Failed to connect to vehicle');
+      await selectVehicle(vehicle);
+    } catch (error) {
+      console.error("Failed to select vehicle:", error);
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'connected':
-        return { name: 'bluetooth-connected', color: Colors.success };
-      case 'connecting':
-        return { name: 'bluetooth-searching', color: Colors.warning };
-      case 'disconnected':
-        return { name: 'bluetooth-disabled', color: Colors.error };
-      default:
-        return { name: 'bluetooth', color: Colors.textSecondary };
+  const handleStartPairing = async () => {
+    if (!selectedVehicle) {
+      Alert.alert("Pairing", "Select a vehicle before starting pairing.");
+      return;
     }
-  };
 
-  const getConnectionStatus = () => {
-    if (connection.isConnected) return 'connected';
-    if (connection.isScanning) return 'connecting';
-    return 'disconnected';
-  };
-
-  const handleTestAPI = async () => {
-    setTestLoading(true);
     try {
-      const response = await axios.post(`${API_BASE_URL}/test`, {
-        testData: 'Hello from mobile app',
-        timestamp: new Date().toISOString(),
-        deviceInfo: 'React Native App'
-      }, {
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
+      const expectedDeviceId = selectedVehicle.device_id;
+      await startPairing(selectedVehicle.id, {
+        expectedDeviceIds: expectedDeviceId ? [expectedDeviceId] : undefined,
       });
-      
-      Alert.alert(
-        'API Test Success!', 
-        `Response: ${response.data.message}\nServer Status: ${response.data.serverStatus}\nTimestamp: ${response.data.timestamp}`
-      );
     } catch (error: any) {
-      let errorMsg = 'Unknown error';
-      if (error.response) {
-        errorMsg = `Server Error: ${error.response.status} - ${error.response.data?.error || error.response.data?.message || 'Unknown'}`;
-      } else if (error.request) {
-        errorMsg = 'Network Error: No response from server';
-      } else {
-        errorMsg = `Request Error: ${error.message}`;
-      }
-      
-      Alert.alert('API Test Failed', errorMsg);
-    } finally {
-      setTestLoading(false);
+      Alert.alert("Pairing Error", error.message || "Failed to start pairing");
     }
   };
 
-  if (!selectedVehicle && !isLoading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <Header title="Digital Key" />
-        <View style={styles.emptyState}>
-          <Icon name="directions-car" size={64} color={Colors.textMuted} />
-          <Text style={styles.emptyTitle}>No Vehicle Selected</Text>
-          <Text style={styles.emptyText}>
-            Please select a vehicle from your vehicle list to get started.
-          </Text>
+  const handleSelectPairingDevice = async (deviceId: string) => {
+    try {
+      await selectPairingDevice(deviceId);
+    } catch (error: any) {
+      Alert.alert("Pairing Error", error.message || "Failed to connect to device");
+    }
+  };
+
+  const handleCancelPairing = async () => {
+    try {
+      await cancelPairing();
+    } catch (error: any) {
+      Alert.alert("Pairing Error", error.message || "Failed to cancel pairing");
+    }
+  };
+
+  const handleResetPairing = async () => {
+    try {
+      await resetPairing();
+    } catch (error) {
+      console.error("Failed to reset pairing:", error);
+    }
+  };
+
+  const handleRetryPairing = async () => {
+    if (!selectedVehicle) {
+      Alert.alert("Pairing", "Select a vehicle before starting pairing.");
+      return;
+    }
+
+    await handleResetPairing();
+    await handleStartPairing();
+  };
+
+  const getConnectionStatus = (): "connected" | "connecting" | "disconnected" => {
+    if (connection.isConnected) {
+      return "connected";
+    }
+
+    if (
+      [
+        "scanning",
+        "deviceSelected",
+        "connecting",
+        "challenge",
+        "registering",
+        "completing",
+      ].includes(pairingStep)
+    ) {
+      return "connecting";
+    }
+
+    return "disconnected";
+  };
+
+  const getStatusIcon = (status: "connected" | "connecting" | "disconnected") => {
+    switch (status) {
+      case "connected":
+        return { name: "bluetooth-connected", color: Colors.success };
+      case "connecting":
+        return { name: "bluetooth-searching", color: Colors.warning };
+      default:
+        return { name: "bluetooth-disabled", color: Colors.error };
+    }
+  };
+
+  const connectionStatus = getConnectionStatus();
+  const statusIcon = getStatusIcon(connectionStatus);
+
+  const connectionTitle = (() => {
+    if (connection.isConnected) {
+      return connection.connectedDevice?.name
+        ? `Connected to ${connection.connectedDevice.name}`
+        : "Connected";
+    }
+
+    if (connectionStatus === "connecting") {
+      return "Connecting...";
+    }
+
+    return "Not connected";
+  })();
+
+  const connectionSubtitle = (() => {
+    if (pairingMessage) {
+      return pairingMessage;
+    }
+
+    if (connectionStatus === "connected") {
+      return "Secure session ready. You can control the vehicle immediately.";
+    }
+
+    if (connectionStatus === "connecting") {
+      return "Finishing secure handshake with the vehicle...";
+    }
+
+    return "Scan for the registered vehicle to start a secure session.";
+  })();
+
+  const hasSelectedVehicle = Boolean(selectedVehicle);
+  const hasRegisteredVehicles = vehicles.length > 0;
+
+  const renderDiscoveredDevices = () => {
+    if (connection.discoveredDevices.length === 0) {
+      return (
+        <View style={styles.devicePlaceholder}>
+          <LoadingSpinner size="small" color={Colors.primary} />
+          <Text style={styles.devicePlaceholderText}>Searching for devices...</Text>
+        </View>
+      );
+    }
+
+    return connection.discoveredDevices.map((device) => (
+      <TouchableOpacity
+        key={device.id}
+        style={styles.deviceItem}
+        onPress={() => handleSelectPairingDevice(device.id)}
+      >
+        <Text style={styles.deviceName}>{device.name || "Unknown device"}</Text>
+        {device.rssi !== undefined ? (
+          <Text style={styles.deviceMeta}>RSSI {device.rssi}</Text>
+        ) : null}
+      </TouchableOpacity>
+    ));
+  };
+
+  const renderPairingCard = () => (
+    <View style={styles.connectionCard}>
+      <View style={styles.connectionHeader}>
+        <Icon name={statusIcon.name} size={24} color={statusIcon.color} />
+        <View style={styles.connectionHeaderText}>
+          <Text style={styles.connectionTitle}>{connectionTitle}</Text>
+          {connectionSubtitle ? (
+            <Text style={styles.connectionSubtitle}>{connectionSubtitle}</Text>
+          ) : null}
+        </View>
+      </View>
+
+      {pairingStep === "scanning" ? (
+        <View style={styles.deviceList}>{renderDiscoveredDevices()}</View>
+      ) : null}
+
+      {pairingStep === "error" && pairingContext.error ? (
+        <Text style={styles.pairingError}>{pairingContext.error}</Text>
+      ) : null}
+
+      {pairingStep === "completed" && pairingContext.result?.message ? (
+        <Text style={styles.pairingSuccess}>{pairingContext.result.message}</Text>
+      ) : null}
+
+      <View style={styles.connectionActions}>
+        {pairingStep === "idle" && (
           <Button
-            title="Add Vehicle"
-            onPress={() => navigation.navigate('AddVehicle' as never)}
-            style={styles.emptyButton}
+            title={connection.isConnected ? "Rescan Devices" : "Scan & Pair"}
+            size="small"
+            onPress={handleStartPairing}
+          />
+        )}
+
+        {pairingStep === "scanning" && (
+          <Button title="Cancel" size="small" variant="secondary" onPress={handleCancelPairing} />
+        )}
+
+        {pairingStep === "error" && (
+          <>
+            <Button title="Retry" size="small" onPress={handleRetryPairing} />
+            <Button title="Cancel" size="small" variant="secondary" onPress={handleCancelPairing} />
+          </>
+        )}
+
+        {pairingStep === "completed" && (
+          <Button title="Done" size="small" onPress={handleResetPairing} />
+        )}
+
+        {["deviceSelected", "connecting", "challenge", "registering", "completing"].includes(
+          pairingStep,
+        ) && (
+          <Button title="Cancel" size="small" variant="secondary" onPress={handleCancelPairing} />
+        )}
+      </View>
+    </View>
+  );
+
+  const renderVehicleSummary = () => {
+    if (!selectedVehicle) {
+      return null;
+    }
+
+    return (
+      <View style={styles.summaryCard}>
+        <View style={styles.summaryHeader}>
+          <Icon name="directions-car" size={32} color={Colors.primary} />
+          <View style={styles.summaryInfo}>
+            <Text style={styles.vehicleName}>{selectedVehicle.name || selectedVehicle.model}</Text>
+            <Text style={styles.vehicleModel}>{selectedVehicle.model}</Text>
+          </View>
+        </View>
+        <View style={styles.summaryActions}>
+          <Button
+            title="Change Vehicle"
+            size="small"
+            variant="secondary"
+            onPress={() => navigation.navigate("VehicleList")}
           />
         </View>
-      </SafeAreaView>
+      </View>
     );
-  }
+  };
+
+  const renderControlButtons = () => (
+    <View style={styles.controlSection}>
+      <Text style={styles.sectionTitle}>Vehicle Control</Text>
+      <View style={styles.controlGrid}>
+        <TouchableOpacity
+          style={[
+            styles.controlButton,
+            currentStatus?.doorsLocked ? styles.controlButtonActive : null,
+          ]}
+          onPress={() => handleVehicleCommand("UNLOCK")}
+          disabled={commandLoading === "UNLOCK"}
+        >
+          {commandLoading === "UNLOCK" ? (
+            <LoadingSpinner size="small" color={Colors.white} />
+          ) : (
+            <>
+              <Icon
+                name="lock-open"
+                size={28}
+                color={currentStatus?.doorsLocked ? Colors.white : Colors.primary}
+              />
+              <Text
+                style={[
+                  styles.controlButtonText,
+                  currentStatus?.doorsLocked ? styles.controlButtonTextActive : null,
+                ]}
+              >
+                Unlock
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.controlButton,
+            !currentStatus?.doorsLocked ? styles.controlButtonActive : null,
+          ]}
+          onPress={() => handleVehicleCommand("LOCK")}
+          disabled={commandLoading === "LOCK"}
+        >
+          {commandLoading === "LOCK" ? (
+            <LoadingSpinner size="small" color={Colors.white} />
+          ) : (
+            <>
+              <Icon
+                name="lock"
+                size={28}
+                color={!currentStatus?.doorsLocked ? Colors.white : Colors.primary}
+              />
+              <Text
+                style={[
+                  styles.controlButtonText,
+                  !currentStatus?.doorsLocked ? styles.controlButtonTextActive : null,
+                ]}
+              >
+                Lock
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.controlButton,
+            currentStatus?.engineRunning ? styles.controlButtonActive : null,
+          ]}
+          onPress={() => handleVehicleCommand("START")}
+          disabled={commandLoading === "START"}
+        >
+          {commandLoading === "START" ? (
+            <LoadingSpinner size="small" color={Colors.white} />
+          ) : (
+            <>
+              <Icon
+                name="power-settings-new"
+                size={28}
+                color={currentStatus?.engineRunning ? Colors.white : Colors.primary}
+              />
+              <Text
+                style={[
+                  styles.controlButtonText,
+                  currentStatus?.engineRunning ? styles.controlButtonTextActive : null,
+                ]}
+              >
+                Start
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderStatusSection = () => (
+    <View style={styles.statusSection}>
+      <Text style={styles.sectionTitle}>Vehicle Status</Text>
+      <View style={styles.statusGrid}>
+        <View style={styles.statusItem}>
+          <View style={styles.statusIcon}>
+            <Icon
+              name={currentStatus.doorsLocked ? "lock" : "lock-open"}
+              size={24}
+              color={currentStatus.doorsLocked ? Colors.error : Colors.success}
+            />
+          </View>
+          <View style={styles.statusTextBlock}>
+            <Text style={styles.statusLabel}>Doors</Text>
+            <Text style={styles.statusValue}>
+              {currentStatus.doorsLocked ? "Locked" : "Unlocked"}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.statusItem}>
+          <View style={styles.statusIcon}>
+            <Icon
+              name="power-settings-new"
+              size={24}
+              color={currentStatus.engineRunning ? Colors.success : Colors.textSecondary}
+            />
+          </View>
+          <View style={styles.statusTextBlock}>
+            <Text style={styles.statusLabel}>Engine</Text>
+            <Text style={styles.statusValue}>
+              {currentStatus.engineRunning ? "Running" : "Off"}
+            </Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+
+  const renderRegistrationContent = () => (
+    <View style={styles.registrationCard}>
+      <Icon name="directions-car" size={48} color={Colors.primary} />
+      <Text style={styles.sectionTitle}>Register Your Vehicle</Text>
+      <Text style={styles.bodyText}>
+        Select or add a vehicle, then start Bluetooth pairing to complete onboarding.
+      </Text>
+
+      {hasRegisteredVehicles ? (
+        <>
+          <View style={styles.vehicleQuickList}>
+            {vehicles.slice(0, 3).map((vehicle) => (
+              <TouchableOpacity
+                key={vehicle.id}
+                style={[
+                  styles.vehicleQuickItem,
+                  selectedVehicle?.id === vehicle.id ? styles.vehicleQuickItemActive : null,
+                ]}
+                onPress={() => handleVehicleQuickSelect(vehicle)}
+              >
+                <Text
+                  style={[
+                    styles.vehicleQuickName,
+                    selectedVehicle?.id === vehicle.id ? styles.vehicleQuickNameActive : null,
+                  ]}
+                >
+                  {vehicle.name || vehicle.model}
+                </Text>
+                <Text style={styles.vehicleQuickMeta}>{vehicle.model}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Button
+            title="Manage Vehicles"
+            variant="secondary"
+            onPress={() => navigation.navigate("VehicleList")}
+            style={styles.registrationButton}
+          />
+        </>
+      ) : (
+        <Button
+          title="Add Vehicle"
+          onPress={() => navigation.navigate("AddVehicle")}
+          style={styles.registrationButton}
+        />
+      )}
+
+      <Text style={styles.helperText}>
+        {hasRegisteredVehicles
+          ? "Select a vehicle to bring it into Home, then start BLE pairing."
+          : "Add a vehicle to your account before starting BLE pairing."}
+      </Text>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Digital Key" rightIcon="settings" onRightPress={() => {}} />
-      
+      <Header title="Digital Key" />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
-        {selectedVehicle && (
+        {!hasSelectedVehicle && !isLoading ? (
+          renderRegistrationContent()
+        ) : (
           <>
-            {/* Vehicle Info */}
-            <View style={styles.vehicleCard}>
-              <View style={styles.vehicleHeader}>
-                <Icon name="directions-car" size={32} color={Colors.primary} />
-                <View style={styles.vehicleInfo}>
-                  <Text style={styles.vehicleName}>
-                    {selectedVehicle.name || selectedVehicle.model}
-                  </Text>
-                  <Text style={styles.vehicleModel}>{selectedVehicle.model}</Text>
-                </View>
-              </View>
-            </View>
-
-            {/* BLE Connection Status */}
-            <TouchableOpacity 
-              style={styles.connectionCard}
-              onPress={handleBLEConnection}
-              activeOpacity={0.7}
-            >
-              <View style={styles.connectionHeader}>
-                <Icon 
-                  name={getStatusIcon(getConnectionStatus()).name} 
-                  size={24} 
-                  color={getStatusIcon(getConnectionStatus()).color} 
-                />
-                <Text style={styles.connectionTitle}>
-                  {connection.isConnected ? 'Connected' : connection.isScanning ? 'Connecting...' : 'Disconnected'}
-                </Text>
-              </View>
-              {connection.isConnected && (
-                <Text style={styles.connectionSubtitle}>
-                  Device: {connection.connectedDevice?.name}
-                </Text>
-              )}
-            </TouchableOpacity>
-
-            {/* Test API Button */}
-            <View style={styles.testSection}>
-              <Button
-                title={testLoading ? "Testing..." : "Test API Connection"}
-                onPress={handleTestAPI}
-                loading={testLoading}
-                style={[styles.testButton, testLoading && styles.testButtonLoading]}
-                textStyle={styles.testButtonText}
-              />
-            </View>
-
-            {/* Control Buttons */}
-            <View style={styles.controlSection}>
-              <Text style={styles.sectionTitle}>Vehicle Control</Text>
-              
-              <View style={styles.controlGrid}>
-                <TouchableOpacity
-                  style={[
-                    styles.controlButton,
-                    currentStatus?.doorsLocked ? styles.controlButtonActive : null
-                  ]}
-                  onPress={() => handleVehicleCommand('UNLOCK')}
-                  disabled={commandLoading === 'UNLOCK'}
-                >
-                  {commandLoading === 'UNLOCK' ? (
-                    <LoadingSpinner size="small" color={Colors.white} />
-                  ) : (
-                    <>
-                      <Icon 
-                        name="lock-open" 
-                        size={28} 
-                        color={currentStatus?.doorsLocked ? Colors.white : Colors.primary} 
-                      />
-                      <Text style={[
-                        styles.controlButtonText,
-                        currentStatus?.doorsLocked ? styles.controlButtonTextActive : null
-                      ]}>
-                        Unlock
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.controlButton,
-                    !currentStatus?.doorsLocked ? styles.controlButtonActive : null
-                  ]}
-                  onPress={() => handleVehicleCommand('LOCK')}
-                  disabled={commandLoading === 'LOCK'}
-                >
-                  {commandLoading === 'LOCK' ? (
-                    <LoadingSpinner size="small" color={Colors.white} />
-                  ) : (
-                    <>
-                      <Icon 
-                        name="lock" 
-                        size={28} 
-                        color={!currentStatus?.doorsLocked ? Colors.white : Colors.primary} 
-                      />
-                      <Text style={[
-                        styles.controlButtonText,
-                        !currentStatus?.doorsLocked ? styles.controlButtonTextActive : null
-                      ]}>
-                        Lock
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.controlButton,
-                    currentStatus?.engineRunning ? styles.controlButtonActive : null
-                  ]}
-                  onPress={() => handleVehicleCommand('START')}
-                  disabled={commandLoading === 'START'}
-                >
-                  {commandLoading === 'START' ? (
-                    <LoadingSpinner size="small" color={Colors.white} />
-                  ) : (
-                    <>
-                      <Icon 
-                        name="power-settings-new" 
-                        size={28} 
-                        color={currentStatus?.engineRunning ? Colors.white : Colors.primary} 
-                      />
-                      <Text style={[
-                        styles.controlButtonText,
-                        currentStatus?.engineRunning ? styles.controlButtonTextActive : null
-                      ]}>
-                        Start
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.controlButton}
-                  onPress={() => handleVehicleCommand('TRUNK')}
-                  disabled={commandLoading === 'TRUNK'}
-                >
-                  {commandLoading === 'TRUNK' ? (
-                    <LoadingSpinner size="small" color={Colors.white} />
-                  ) : (
-                    <>
-                      <Icon name="inventory" size={28} color={Colors.primary} />
-                      <Text style={styles.controlButtonText}>Trunk</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Vehicle Status */}
-            {currentStatus && (
-              <View style={styles.statusSection}>
-                <Text style={styles.sectionTitle}>Vehicle Status</Text>
-                
-                <View style={styles.statusGrid}>
-                  <View style={styles.statusItem}>
-                    <Icon name="battery-charging-full" size={24} color={Colors.success} />
-                    <Text style={styles.statusLabel}>Battery</Text>
-                    <Text style={styles.statusValue}>{currentStatus.battery}%</Text>
-                  </View>
-                  
-                  <View style={styles.statusItem}>
-                    <Icon 
-                      name={currentStatus.doorsLocked ? "lock" : "lock-open"} 
-                      size={24} 
-                      color={currentStatus.doorsLocked ? Colors.error : Colors.success} 
-                    />
-                    <Text style={styles.statusLabel}>Doors</Text>
-                    <Text style={styles.statusValue}>
-                      {currentStatus.doorsLocked ? 'Locked' : 'Unlocked'}
-                    </Text>
-                  </View>
-                  
-                  <View style={styles.statusItem}>
-                    <Icon 
-                      name="power-settings-new" 
-                      size={24} 
-                      color={currentStatus.engineRunning ? Colors.success : Colors.textSecondary} 
-                    />
-                    <Text style={styles.statusLabel}>Engine</Text>
-                    <Text style={styles.statusValue}>
-                      {currentStatus.engineRunning ? 'Running' : 'Off'}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            )}
+            {renderVehicleSummary()}
+            {renderPairingCard()}
+            {renderControlButtons()}
+            {renderStatusSection()}
           </>
         )}
       </ScrollView>
@@ -402,196 +620,264 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  
   scrollView: {
     flex: 1,
   },
-  
   scrollContent: {
-    paddingHorizontal: Dimensions.spacing.lg,
-    paddingBottom: Dimensions.spacing.xl,
+    paddingHorizontal: Dimensions.spacing.md,
+    paddingTop: Dimensions.spacing.md,
+    paddingBottom: Dimensions.spacing.lg,
+    gap: Dimensions.spacing.md,
   },
-  
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: Dimensions.spacing.xl,
-  },
-  
-  emptyTitle: {
-    fontSize: Fonts.size['2xl'],
-    fontFamily: Fonts.family.semibold,
-    color: Colors.text,
-    textAlign: 'center',
-    marginTop: Dimensions.spacing.lg,
-    marginBottom: Dimensions.spacing.sm,
-  },
-  
-  emptyText: {
-    fontSize: Fonts.size.base,
-    fontFamily: Fonts.family.regular,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: Fonts.lineHeight.base,
-    marginBottom: Dimensions.spacing.xl,
-  },
-  
-  emptyButton: {
-    minWidth: 150,
-  },
-  
-  vehicleCard: {
+  registrationCard: {
     backgroundColor: Colors.surface,
     borderRadius: Dimensions.borderRadius.lg,
     padding: Dimensions.spacing.lg,
-    marginBottom: Dimensions.spacing.lg,
-    elevation: Dimensions.elevation.sm,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Dimensions.spacing.sm,
   },
-  
-  vehicleHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  bodyText: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    lineHeight: Fonts.lineHeight.base,
   },
-  
-  vehicleInfo: {
-    marginLeft: Dimensions.spacing.md,
+  helperText: {
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    lineHeight: Fonts.lineHeight.sm,
+  },
+  registrationButton: {
+    alignSelf: "stretch",
+  },
+  vehicleQuickList: {
+    alignSelf: "stretch",
+    gap: Dimensions.spacing.sm,
+  },
+  vehicleQuickItem: {
+    padding: Dimensions.spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Dimensions.borderRadius.md,
+    backgroundColor: Colors.surfaceSecondary,
+  },
+  vehicleQuickItemActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  vehicleQuickName: {
+    fontSize: Fonts.size.base,
+    fontFamily: Fonts.family.medium,
+    color: Colors.text,
+  },
+  vehicleQuickNameActive: {
+    color: Colors.white,
+  },
+  vehicleQuickMeta: {
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+    marginTop: Dimensions.spacing.xs / 2,
+  },
+  summaryCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Dimensions.borderRadius.lg,
+    padding: Dimensions.spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Dimensions.spacing.sm,
+  },
+  summaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Dimensions.spacing.md,
+  },
+  summaryInfo: {
     flex: 1,
   },
-  
+  summaryActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+  },
   vehicleName: {
     fontSize: Fonts.size.xl,
     fontFamily: Fonts.family.semibold,
     color: Colors.text,
-    marginBottom: 2,
   },
-  
   vehicleModel: {
     fontSize: Fonts.size.sm,
     fontFamily: Fonts.family.regular,
     color: Colors.textSecondary,
+    marginTop: 2,
   },
-  
   connectionCard: {
     backgroundColor: Colors.surface,
     borderRadius: Dimensions.borderRadius.lg,
-    padding: Dimensions.spacing.lg,
-    marginBottom: Dimensions.spacing.lg,
-    elevation: Dimensions.elevation.sm,
+    padding: Dimensions.spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Dimensions.spacing.sm,
   },
-  
   connectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Dimensions.spacing.sm,
   },
-  
+  connectionHeaderText: {
+    flex: 1,
+  },
   connectionTitle: {
     fontSize: Fonts.size.base,
     fontFamily: Fonts.family.medium,
     color: Colors.text,
-    marginLeft: Dimensions.spacing.sm,
   },
-  
   connectionSubtitle: {
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+    marginTop: Dimensions.spacing.xs / 2,
+  },
+  pairingError: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.medium,
+    color: Colors.error,
+  },
+  pairingSuccess: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.medium,
+    color: Colors.success,
+  },
+  deviceList: {
+    gap: Dimensions.spacing.sm,
+  },
+  devicePlaceholder: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Dimensions.spacing.sm,
+  },
+  devicePlaceholderText: {
     fontSize: Fonts.size.sm,
     fontFamily: Fonts.family.regular,
     color: Colors.textSecondary,
-    marginTop: Dimensions.spacing.xs,
   },
-  
+  deviceItem: {
+    padding: Dimensions.spacing.sm,
+    borderRadius: Dimensions.borderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceSecondary,
+  },
+  deviceName: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.medium,
+    color: Colors.text,
+  },
+  deviceMeta: {
+    marginTop: Dimensions.spacing.xs / 2,
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+  },
+  connectionActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Dimensions.spacing.sm,
+  },
   controlSection: {
-    marginBottom: Dimensions.spacing.lg,
+    backgroundColor: Colors.surface,
+    borderRadius: Dimensions.borderRadius.lg,
+    padding: Dimensions.spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Dimensions.spacing.sm,
   },
-  
   sectionTitle: {
     fontSize: Fonts.size.lg,
     fontFamily: Fonts.family.semibold,
     color: Colors.text,
-    marginBottom: Dimensions.spacing.md,
   },
-  
   controlGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "stretch",
+    gap: Dimensions.spacing.sm,
   },
-  
   controlButton: {
-    width: '48%',
+    flexBasis: "31%",
+    maxWidth: "31%",
+    flexGrow: 0,
     backgroundColor: Colors.surface,
     borderRadius: Dimensions.borderRadius.lg,
-    padding: Dimensions.spacing.lg,
-    alignItems: 'center',
-    marginBottom: Dimensions.spacing.md,
-    elevation: Dimensions.elevation.sm,
+    paddingVertical: Dimensions.spacing.md,
+    alignItems: "center",
     borderWidth: 1,
     borderColor: Colors.border,
+    gap: Dimensions.spacing.xs,
   },
-  
   controlButtonActive: {
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
   },
-  
   controlButtonText: {
     fontSize: Fonts.size.sm,
     fontFamily: Fonts.family.medium,
     color: Colors.primary,
-    marginTop: Dimensions.spacing.xs,
   },
-  
   controlButtonTextActive: {
     color: Colors.white,
   },
-  
   statusSection: {
-    marginBottom: Dimensions.spacing.lg,
-  },
-  
-  statusGrid: {
     backgroundColor: Colors.surface,
     borderRadius: Dimensions.borderRadius.lg,
-    padding: Dimensions.spacing.lg,
-    elevation: Dimensions.elevation.sm,
+    padding: Dimensions.spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Dimensions.spacing.sm,
   },
-  
+  statusGrid: {
+    flexDirection: "row",
+    gap: Dimensions.spacing.sm,
+  },
   statusItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Dimensions.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  
-  statusLabel: {
-    fontSize: Fonts.size.base,
-    fontFamily: Fonts.family.regular,
-    color: Colors.text,
-    marginLeft: Dimensions.spacing.md,
     flex: 1,
+    backgroundColor: Colors.surfaceSecondary,
+    borderRadius: Dimensions.borderRadius.md,
+    padding: Dimensions.spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Dimensions.spacing.sm,
   },
-  
-  statusValue: {
-    fontSize: Fonts.size.base,
-    fontFamily: Fonts.family.medium,
+  statusIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.surface,
+  },
+  statusTextBlock: {
+    flex: 1,
+    gap: 2,
+  },
+  statusLabel: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.regular,
     color: Colors.textSecondary,
   },
-  
-  testSection: {
-    marginBottom: Dimensions.spacing.lg,
-  },
-  
-  testButton: {
-    backgroundColor: Colors.secondary,
-    borderColor: Colors.secondary,
-  },
-  
-  testButtonLoading: {
-    opacity: 0.7,
-  },
-  
-  testButtonText: {
-    color: Colors.white,
+  statusValue: {
+    fontSize: Fonts.size.sm,
     fontFamily: Fonts.family.medium,
+    color: Colors.text,
+  },
+  statusPlaceholder: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
   },
 });

@@ -17,10 +17,13 @@ export interface RegisterRequest {
   name: string;
 }
 
-export interface AuthResponse {
-  user: User;
-  token: string;
+export interface AuthTokens {
+  accessToken: string;
   refreshToken: string;
+}
+
+export interface AuthResponse extends AuthTokens {
+  user: User;
 }
 
 export interface AuthState {

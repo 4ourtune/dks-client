@@ -1,13 +1,13 @@
-import React from 'react';
-import { createStackNavigator } from '@react-navigation/stack';
-import { LoginScreen, RegisterScreen } from '@/screens/auth';
+import React from "react";
+import { createStackNavigator } from "@react-navigation/stack";
+import { LoginScreen, RegisterScreen } from "@/screens/auth";
 
 const Stack = createStackNavigator();
 
 export const AuthNavigator: React.FC = () => {
   return (
-    <Stack.Navigator 
-      screenOptions={{ 
+    <Stack.Navigator
+      screenOptions={{
         headerShown: false,
         gestureEnabled: true,
       }}

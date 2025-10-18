@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -7,53 +7,53 @@ import {
   Platform,
   ScrollView,
   Alert,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import { Button, Input, LoadingSpinner } from '@/components/common';
-import { useAuthStore } from '@/stores';
-import { Colors, Fonts, Dimensions } from '@/styles';
-import { VALIDATION_RULES } from '@/utils/constants';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useNavigation } from "@react-navigation/native";
+import { Button, Input } from "@/components/common";
+import { useAuthStore } from "@/stores";
+import { Colors, Fonts, Dimensions } from "@/styles";
+import { VALIDATION_RULES } from "@/utils/constants";
 
 export const LoginScreen: React.FC = () => {
   const navigation = useNavigation();
   const { login, isLoading, error, clearError } = useAuthStore();
-  
+
   const [formData, setFormData] = useState({
-    email: '',
-    password: '',
+    email: "",
+    password: "",
   });
-  
+
   const [errors, setErrors] = useState({
-    email: '',
-    password: '',
+    email: "",
+    password: "",
   });
 
   const validateForm = (): boolean => {
     const newErrors = {
-      email: '',
-      password: '',
+      email: "",
+      password: "",
     };
 
     if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
+      newErrors.email = "Email is required";
     } else if (!VALIDATION_RULES.EMAIL.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email address';
+      newErrors.email = "Please enter a valid email address";
     }
 
     if (!formData.password.trim()) {
-      newErrors.password = 'Password is required';
+      newErrors.password = "Password is required";
     } else if (formData.password.length < VALIDATION_RULES.PASSWORD.MIN_LENGTH) {
       newErrors.password = `Password must be at least ${VALIDATION_RULES.PASSWORD.MIN_LENGTH} characters`;
     }
 
     setErrors(newErrors);
-    return !Object.values(newErrors).some(error => error !== '');
+    return !Object.values(newErrors).some((value) => value !== "");
   };
 
   const handleLogin = async () => {
     clearError();
-    
+
     if (!validateForm()) {
       return;
     }
@@ -63,35 +63,34 @@ export const LoginScreen: React.FC = () => {
         email: formData.email.trim().toLowerCase(),
         password: formData.password,
       });
-      
     } catch (err: any) {
-      Alert.alert('Login Failed', err.message || 'Please try again');
+      Alert.alert("Login Failed", err.message || "Please try again");
     }
   };
 
   const handleInputChange = (field: keyof typeof formData, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    
+    setFormData((prev) => ({ ...prev, [field]: value }));
+
     if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: '' }));
+      setErrors((prev) => ({ ...prev, [field]: "" }));
     }
-    
+
     if (error) {
       clearError();
     }
   };
 
   const navigateToRegister = () => {
-    navigation.navigate('Register' as never);
+    navigation.navigate("Register" as never);
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
@@ -105,7 +104,7 @@ export const LoginScreen: React.FC = () => {
             <Input
               label="Email Address"
               value={formData.email}
-              onChangeText={(text) => handleInputChange('email', text)}
+              onChangeText={(text) => handleInputChange("email", text)}
               keyboardType="email-address"
               autoCapitalize="none"
               autoComplete="email"
@@ -118,7 +117,7 @@ export const LoginScreen: React.FC = () => {
             <Input
               label="Password"
               value={formData.password}
-              onChangeText={(text) => handleInputChange('password', text)}
+              onChangeText={(text) => handleInputChange("password", text)}
               secureTextEntry
               autoComplete="password"
               leftIcon="lock"
@@ -127,9 +126,7 @@ export const LoginScreen: React.FC = () => {
               required
             />
 
-            {error && (
-              <Text style={styles.errorText}>{error}</Text>
-            )}
+            {error && <Text style={styles.errorText}>{error}</Text>}
 
             <Button
               title="Sign In"
@@ -142,7 +139,7 @@ export const LoginScreen: React.FC = () => {
 
           <View style={styles.footer}>
             <Text style={styles.footerText}>
-              Don't have an account?{' '}
+              Don't have an account?{" "}
               <Text style={styles.linkText} onPress={navigateToRegister}>
                 Sign Up
               </Text>
@@ -159,76 +156,76 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  
+
   keyboardView: {
     flex: 1,
   },
-  
+
   scrollView: {
     flex: 1,
   },
-  
+
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: Dimensions.spacing.lg,
     paddingVertical: Dimensions.spacing.xl,
   },
-  
+
   header: {
-    alignItems: 'center',
-    marginBottom: Dimensions.spacing['3xl'],
+    alignItems: "center",
+    marginBottom: Dimensions.spacing["3xl"],
     paddingTop: Dimensions.spacing.xl,
   },
-  
+
   title: {
-    fontSize: Fonts.size['3xl'],
+    fontSize: Fonts.size["3xl"],
     fontFamily: Fonts.family.bold,
     color: Colors.text,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: Dimensions.spacing.sm,
-    lineHeight: Fonts.lineHeight['3xl'],
+    lineHeight: Fonts.lineHeight["3xl"],
   },
-  
+
   subtitle: {
     fontSize: Fonts.size.base,
     fontFamily: Fonts.family.regular,
     color: Colors.textSecondary,
-    textAlign: 'center',
+    textAlign: "center",
     lineHeight: Fonts.lineHeight.base,
   },
-  
+
   form: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     marginBottom: Dimensions.spacing.xl,
   },
-  
+
   loginButton: {
     marginTop: Dimensions.spacing.lg,
   },
-  
+
   errorText: {
     fontSize: Fonts.size.sm,
     fontFamily: Fonts.family.regular,
     color: Colors.error,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: Dimensions.spacing.md,
     lineHeight: Fonts.lineHeight.sm,
   },
-  
+
   footer: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingBottom: Dimensions.spacing.lg,
   },
-  
+
   footerText: {
     fontSize: Fonts.size.base,
     fontFamily: Fonts.family.regular,
     color: Colors.textSecondary,
-    textAlign: 'center',
+    textAlign: "center",
     lineHeight: Fonts.lineHeight.base,
   },
-  
+
   linkText: {
     color: Colors.primary,
     fontFamily: Fonts.family.semibold,

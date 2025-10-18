@@ -1,8 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET"/>
-  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>  <!-- ì¶”ê°€ -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>  <!-- Ãß?? -->
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+  <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+  <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+  <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
   
   <application 
     android:name=".MainApplication" 
@@ -11,7 +16,7 @@
     android:allowBackup="true" 
     android:theme="@style/AppTheme" 
     android:supportsRtl="true"
-    android:usesCleartextTraffic="true">  <!-- ì´ ì¤„ ì¶”ê°€ -->
+    android:usesCleartextTraffic="true">  <!-- ????Ãß?? -->
     
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>

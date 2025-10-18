@@ -1,40 +1,45 @@
-export type KeyPermission = 'unlock' | 'lock' | 'start' | 'trunk';
+export interface KeyPermissions {
+  unlock: boolean;
+  lock: boolean;
+  startEngine: boolean;
+}
 
 export interface DigitalKey {
   id: string;
-  userId: string;
   vehicleId: string;
-  name: string;
-  permissions: KeyPermission[];
-  expiresAt?: string;
+  userId?: string;
+  permissions: KeyPermissions;
+  expiresAt?: string | null;
   isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  vehicleInfo?: {
+    vin: string;
+    model: string;
+    status?: string;
+  } | null;
 }
 
 export interface KeyCreateRequest {
   vehicleId: string;
-  name: string;
-  permissions: KeyPermission[];
+  permissions: KeyPermissions;
   expiresAt?: string;
 }
 
 export interface KeyUpdateRequest {
-  name?: string;
-  permissions?: KeyPermission[];
+  permissions?: KeyPermissions;
   expiresAt?: string;
   isActive?: boolean;
 }
 
 export interface KeyValidationRequest {
-  keyId: string;
-  command: string;
+  command: "unlock" | "lock" | "startEngine";
   timestamp: number;
 }
 
 export interface KeyValidationResponse {
   isValid: boolean;
-  permissions: KeyPermission[];
+  permissions: KeyPermissions;
   expiresAt?: string;
 }
 
@@ -43,4 +48,25 @@ export interface KeyState {
   selectedKey: DigitalKey | null;
   isLoading: boolean;
   error: string | null;
+}
+export interface PairingSessionStartRequest {
+  vehicleId: string;
+  device_id: string;
+  nonce: string;
+  rssi?: number;
+}
+
+export interface PairingSessionStartResponse {
+  sessionId: string;
+  expiresAt?: string;
+}
+
+export interface PairingCompletionRequest {
+  sessionId: string;
+  responsePayload: Record<string, any>;
+}
+
+export interface PairingCompletionResult {
+  key?: DigitalKey;
+  blePayload?: Record<string, any>;
 }

@@ -1,7 +1,7 @@
-import { CommandPacket, ResponsePacket } from '@/types';
+import { CommandPacket, ResponsePacket } from "@/types";
 
 export class CommandEncoder {
-  private static readonly PROTOCOL_VERSION = '1.0';
+  private static readonly PROTOCOL_VERSION = "1.0";
   private static readonly MAX_PACKET_SIZE = 1024;
 
   static encodeCommand(command: CommandPacket): string {
@@ -12,9 +12,9 @@ export class CommandEncoder {
       };
 
       const encoded = JSON.stringify(packet);
-      
+
       if (encoded.length > this.MAX_PACKET_SIZE) {
-        throw new Error('Command packet too large');
+        throw new Error("Command packet too large");
       }
 
       return encoded;
@@ -26,18 +26,18 @@ export class CommandEncoder {
   static decodeResponse(rawData: string): ResponsePacket {
     try {
       if (!rawData || rawData.trim().length === 0) {
-        throw new Error('Empty response data');
+        throw new Error("Empty response data");
       }
 
       const parsed = JSON.parse(rawData);
-      
+
       if (!parsed.version || parsed.version !== this.PROTOCOL_VERSION) {
-        console.warn('Protocol version mismatch:', parsed.version);
+        console.warn("Protocol version mismatch:", parsed.version);
       }
 
       return {
         success: Boolean(parsed.success),
-        command: String(parsed.command || ''),
+        command: String(parsed.command || ""),
         timestamp: Number(parsed.timestamp || Date.now()),
         data: parsed.data,
         error: parsed.error ? String(parsed.error) : undefined,
@@ -50,9 +50,9 @@ export class CommandEncoder {
   static createHeartbeatCommand(keyId: string): CommandPacket {
     return {
       timestamp: Date.now(),
-      command: 'STATUS',
+      command: "STATUS",
       keyId,
-      signature: '',
+      signature: "",
     };
   }
 
@@ -74,7 +74,7 @@ export class CommandEncoder {
   static decompressResponse(rawData: string): ResponsePacket {
     try {
       const parsed = JSON.parse(rawData);
-      
+
       return {
         success: Boolean(parsed.ok || parsed.success),
         command: this.getCommandFromCode(parsed.c) || parsed.command,
@@ -89,12 +89,12 @@ export class CommandEncoder {
 
   private static getCommandCode(command: string): string {
     const codes: Record<string, string> = {
-      'UNLOCK': 'U',
-      'LOCK': 'L',
-      'START': 'S',
-      'STOP': 'T',
-      'STATUS': 'Q',
-      'TRUNK': 'R',
+      UNLOCK: "U",
+      LOCK: "L",
+      START: "S",
+      STOP: "T",
+      STATUS: "Q",
+      TRUNK: "R",
     };
 
     return codes[command] || command;
@@ -102,12 +102,12 @@ export class CommandEncoder {
 
   private static getCommandFromCode(code: string): string {
     const commands: Record<string, string> = {
-      'U': 'UNLOCK',
-      'L': 'LOCK',
-      'S': 'START',
-      'T': 'STOP',
-      'Q': 'STATUS',
-      'R': 'TRUNK',
+      U: "UNLOCK",
+      L: "LOCK",
+      S: "START",
+      T: "STOP",
+      Q: "STATUS",
+      R: "TRUNK",
     };
 
     return commands[code] || code;
@@ -116,8 +116,8 @@ export class CommandEncoder {
   static createBatchCommand(commands: CommandPacket[]): string {
     const batch = {
       version: this.PROTOCOL_VERSION,
-      type: 'batch',
-      commands: commands.map(cmd => ({
+      type: "batch",
+      commands: commands.map((cmd) => ({
         t: cmd.timestamp,
         c: this.getCommandCode(cmd.command),
         k: cmd.keyId,
@@ -126,9 +126,9 @@ export class CommandEncoder {
     };
 
     const encoded = JSON.stringify(batch);
-    
+
     if (encoded.length > this.MAX_PACKET_SIZE) {
-      throw new Error('Batch command packet too large');
+      throw new Error("Batch command packet too large");
     }
 
     return encoded;
@@ -137,9 +137,9 @@ export class CommandEncoder {
   static parseBatchResponse(rawData: string): ResponsePacket[] {
     try {
       const parsed = JSON.parse(rawData);
-      
-      if (parsed.type !== 'batch' || !Array.isArray(parsed.responses)) {
-        throw new Error('Invalid batch response format');
+
+      if (parsed.type !== "batch" || !Array.isArray(parsed.responses)) {
+        throw new Error("Invalid batch response format");
       }
 
       return parsed.responses.map((resp: any) => ({

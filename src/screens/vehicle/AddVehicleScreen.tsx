@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -7,202 +7,199 @@ import {
   Platform,
   ScrollView,
   Alert,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import { Button, Input, Header } from '@/components/common';
-import { useVehicleStore } from '@/stores';
-import { Colors, Fonts, Dimensions } from '@/styles';
-import { VALIDATION_RULES } from '@/utils/constants';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useNavigation } from "@react-navigation/native";
+import { Button, Input, Header } from "@/components/common";
+import { Colors, Fonts, Dimensions } from "@/styles";
+import { usePairingStore, useVehicleStore } from "@/stores";
+
+const PIN_LENGTH = 6;
 
 export const AddVehicleScreen: React.FC = () => {
-  const navigation = useNavigation();
-  const { createVehicle, isLoading, error, clearError } = useVehicleStore();
-  
-  const [formData, setFormData] = useState({
-    name: '',
-    model: '',
-    year: '',
-    licensePlate: '',
-    vin: '',
-  });
-  
-  const [errors, setErrors] = useState({
-    name: '',
-    model: '',
-    year: '',
-    licensePlate: '',
-    vin: '',
-  });
+  const navigation = useNavigation<any>();
+  const { fetchVehicles, selectVehicle } = useVehicleStore();
+  const {
+    status,
+    pendingSession,
+    pairingResult,
+    attemptsRemaining,
+    error,
+    checkPendingSession,
+    confirmPin,
+    reset,
+  } = usePairingStore();
 
-  const validateForm = (): boolean => {
-    const newErrors = {
-      name: '',
-      model: '',
-      year: '',
-      licensePlate: '',
-      vin: '',
-    };
+  const [vehicleIdInput, setVehicleIdInput] = useState("");
+  const [pinInput, setPinInput] = useState("");
 
-    if (!formData.name.trim()) {
-      newErrors.name = 'Vehicle name is required';
+  const isChecking = status === "checking";
+  const isConfirming = status === "confirming";
+
+  useEffect(() => () => reset(), [reset]);
+
+  const expiresAtLabel = useMemo(() => {
+    if (!pendingSession) {
+      return null;
     }
-
-    if (!formData.model.trim()) {
-      newErrors.model = 'Vehicle model is required';
+    try {
+      return new Date(pendingSession.expiresAt).toLocaleString();
+    } catch {
+      return pendingSession.expiresAt;
     }
+  }, [pendingSession]);
 
-    if (!formData.year.trim()) {
-      newErrors.year = 'Vehicle year is required';
-    } else {
-      const year = parseInt(formData.year);
-      const currentYear = new Date().getFullYear();
-      if (isNaN(year) || year < 1900 || year > currentYear + 1) {
-        newErrors.year = 'Please enter a valid year';
-      }
+  const parsedVehicleId = useMemo(() => {
+    const trimmed = vehicleIdInput.trim();
+    if (!trimmed) {
+      return null;
     }
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }, [vehicleIdInput]);
 
-    if (!formData.licensePlate.trim()) {
-      newErrors.licensePlate = 'License plate is required';
+  const handleCheckSession = async () => {
+    if (!parsedVehicleId) {
+      Alert.alert("Invalid Vehicle", "Please enter a valid vehicle ID.");
+      return;
     }
-
-    if (!formData.vin.trim()) {
-      newErrors.vin = 'VIN is required';
-    } else if (formData.vin.length !== 17) {
-      newErrors.vin = 'VIN must be exactly 17 characters';
+    try {
+      await checkPendingSession(parsedVehicleId);
+    } catch (checkError) {
+      const message =
+        checkError instanceof Error ? checkError.message : "Unable to check pairing status.";
+      Alert.alert("Pairing Status", message);
     }
-
-    setErrors(newErrors);
-    return !Object.values(newErrors).some(error => error !== '');
   };
 
-  const handleAddVehicle = async () => {
-    clearError();
-    
-    if (!validateForm()) {
+  const handleConfirmPin = async () => {
+    if (!parsedVehicleId) {
+      Alert.alert("Invalid Vehicle", "Please enter a valid vehicle ID.");
+      return;
+    }
+    if (pinInput.length !== PIN_LENGTH) {
+      Alert.alert("Invalid PIN", `Enter the ${PIN_LENGTH}-character PIN displayed in the vehicle.`);
       return;
     }
 
     try {
-      await createVehicle({
-        name: formData.name.trim(),
-        model: formData.model.trim(),
-        year: parseInt(formData.year),
-        licensePlate: formData.licensePlate.trim().toUpperCase(),
-        vin: formData.vin.trim().toUpperCase(),
-      });
-      
-      Alert.alert('Success', 'Vehicle added successfully!', [
-        { text: 'OK', onPress: () => navigation.goBack() }
-      ]);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to add vehicle');
-    }
-  };
+      await confirmPin(parsedVehicleId, pinInput.trim().toUpperCase());
+      setPinInput("");
+      const updatedVehicles = await fetchVehicles();
+      const matchedVehicle =
+        updatedVehicles.find((vehicle) => vehicle.id === String(parsedVehicleId)) || null;
 
-  const handleInputChange = (field: keyof typeof formData, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    
-    if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: '' }));
-    }
-    
-    if (error) {
-      clearError();
+      Alert.alert("Vehicle Paired", "Vehicle registration completed successfully.", [
+        {
+          text: "OK",
+          onPress: () => {
+            reset();
+            if (matchedVehicle) {
+              selectVehicle(matchedVehicle).catch((selectionError) => {
+                console.warn("Vehicle selection after pairing failed:", selectionError);
+              });
+              navigation.navigate("VehicleDetail", {
+                vehicleId: matchedVehicle.id,
+              });
+            } else if (navigation.canGoBack()) {
+              navigation.goBack();
+            } else {
+              navigation.navigate("Home");
+            }
+          },
+        },
+      ]);
+    } catch (confirmError) {
+      const message =
+        confirmError instanceof Error ? confirmError.message : "Unable to confirm pairing PIN.";
+      Alert.alert("Verification Failed", message);
     }
   };
 
   const handleBackPress = () => {
+    reset();
     navigation.goBack();
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
-        title="Add Vehicle"
-        showBackButton
-        onLeftPress={handleBackPress}
-      />
-      
+      <Header title="Register Vehicle" showBackButton onLeftPress={handleBackPress} />
+
       <KeyboardAvoidingView
         style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.form}>
-            <Input
-              label="Vehicle Name"
-              value={formData.name}
-              onChangeText={(text) => handleInputChange('name', text)}
-              autoCapitalize="words"
-              leftIcon="directions-car"
-              error={errors.name}
-              placeholder="e.g., My Tesla Model 3"
-              required
-            />
+          <Text style={styles.description}>
+            Enter the vehicle ID and the pairing PIN shown on the vehicle display. PIN codes are
+            valid for 10 minutes.
+          </Text>
 
-            <Input
-              label="Model"
-              value={formData.model}
-              onChangeText={(text) => handleInputChange('model', text)}
-              autoCapitalize="words"
-              leftIcon="category"
-              error={errors.model}
-              placeholder="e.g., Tesla Model 3"
-              required
-            />
+          <Input
+            label="Vehicle ID"
+            value={vehicleIdInput}
+            onChangeText={setVehicleIdInput}
+            keyboardType="numeric"
+            placeholder="e.g. 1024"
+            autoCorrect={false}
+          />
 
-            <Input
-              label="Year"
-              value={formData.year}
-              onChangeText={(text) => handleInputChange('year', text)}
-              keyboardType="numeric"
-              leftIcon="event"
-              error={errors.year}
-              placeholder="e.g., 2023"
-              maxLength={4}
-              required
-            />
-
-            <Input
-              label="License Plate"
-              value={formData.licensePlate}
-              onChangeText={(text) => handleInputChange('licensePlate', text)}
-              autoCapitalize="characters"
-              leftIcon="local-parking"
-              error={errors.licensePlate}
-              placeholder="e.g., ABC123"
-              required
-            />
-
-            <Input
-              label="VIN"
-              value={formData.vin}
-              onChangeText={(text) => handleInputChange('vin', text)}
-              autoCapitalize="characters"
-              leftIcon="fingerprint"
-              error={errors.vin}
-              placeholder="17-character VIN"
-              maxLength={17}
-              required
-            />
-
-            {error && (
-              <Text style={styles.errorText}>{error}</Text>
-            )}
-
+          <View style={styles.actionRow}>
             <Button
-              title="Add Vehicle"
-              onPress={handleAddVehicle}
-              loading={isLoading}
-              disabled={isLoading}
-              style={styles.addButton}
+              title={isChecking ? "Checking..." : "Check Status"}
+              onPress={handleCheckSession}
+              loading={isChecking}
+              disabled={!parsedVehicleId || isChecking || isConfirming}
+              variant="secondary"
+              size="small"
             />
           </View>
+
+          {pendingSession && (
+            <View style={styles.sessionCard}>
+              <Text style={styles.sessionTitle}>Active pairing session</Text>
+              <Text style={styles.sessionMeta}>Expires at: {expiresAtLabel}</Text>
+              <Text style={styles.sessionMeta}>
+                Attempts remaining: {pendingSession.attemptsRemaining}
+              </Text>
+            </View>
+          )}
+
+          <Input
+            label="PIN"
+            value={pinInput}
+            onChangeText={(value) => setPinInput(value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase())}
+            autoCapitalize="characters"
+            maxLength={PIN_LENGTH}
+            placeholder="Enter vehicle PIN"
+          />
+
+          {attemptsRemaining !== null && status === "error" && (
+            <Text style={styles.attemptsLabel}>Attempts remaining: {attemptsRemaining}</Text>
+          )}
+
+          {error && status === "error" && <Text style={styles.errorText}>{error}</Text>}
+
+          <Button
+            title={isConfirming ? "Verifying..." : "Complete Pairing"}
+            onPress={handleConfirmPin}
+            loading={isConfirming}
+            disabled={!parsedVehicleId || pinInput.length !== PIN_LENGTH || isConfirming}
+            style={styles.primaryButton}
+          />
+
+          {pairingResult && (
+            <View style={styles.successCard}>
+              <Text style={styles.successTitle}>Vehicle paired successfully</Text>
+              <Text style={styles.successMessage}>
+                Vehicle #{pairingResult.vehicleId} is now linked to your account.
+              </Text>
+            </View>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -214,35 +211,80 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  
   keyboardView: {
     flex: 1,
   },
-  
   scrollView: {
     flex: 1,
   },
-  
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: Dimensions.spacing.lg,
     paddingVertical: Dimensions.spacing.lg,
   },
-  
-  form: {
-    flex: 1,
-  },
-  
-  addButton: {
-    marginTop: Dimensions.spacing.lg,
-  },
-  
-  errorText: {
+  description: {
     fontSize: Fonts.size.sm,
     fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+    lineHeight: Fonts.lineHeight.base,
+    marginBottom: Dimensions.spacing.lg,
+  },
+  actionRow: {
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    marginBottom: Dimensions.spacing.lg,
+  },
+  sessionCard: {
+    marginBottom: Dimensions.spacing.lg,
+    padding: Dimensions.spacing.lg,
+    backgroundColor: Colors.surface,
+    borderRadius: Dimensions.borderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  sessionTitle: {
+    fontSize: Fonts.size.base,
+    fontFamily: Fonts.family.semibold,
+    color: Colors.text,
+    marginBottom: Dimensions.spacing.xs,
+  },
+  sessionMeta: {
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.regular,
+    color: Colors.textSecondary,
+    marginBottom: Dimensions.spacing.xs,
+  },
+  attemptsLabel: {
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.medium,
+    color: Colors.textSecondary,
+    marginBottom: Dimensions.spacing.xs,
+  },
+  errorText: {
+    fontSize: Fonts.size.xs,
+    fontFamily: Fonts.family.regular,
     color: Colors.error,
-    textAlign: 'center',
-    marginBottom: Dimensions.spacing.md,
+    marginBottom: Dimensions.spacing.sm,
+  },
+  primaryButton: {
+    marginTop: Dimensions.spacing.sm,
+  },
+  successCard: {
+    marginTop: Dimensions.spacing.lg,
+    padding: Dimensions.spacing.lg,
+    backgroundColor: Colors.successLight,
+    borderRadius: Dimensions.borderRadius.md,
+  },
+  successTitle: {
+    fontSize: Fonts.size.base,
+    fontFamily: Fonts.family.semibold,
+    color: Colors.success,
+    marginBottom: Dimensions.spacing.xs,
+  },
+  successMessage: {
+    fontSize: Fonts.size.sm,
+    fontFamily: Fonts.family.regular,
+    color: Colors.text,
     lineHeight: Fonts.lineHeight.sm,
   },
 });
