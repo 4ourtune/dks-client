@@ -243,6 +243,15 @@ export class StorageService {
     }
   }
 
+  static async clearBleRegistrations(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(KEYS.BLE_REGISTRATIONS);
+      await AsyncStorage.removeItem(KEYS.BLE_DEVICES);
+    } catch (error) {
+      console.error("Failed to clear BLE registrations:", error);
+    }
+  }
+
   static async setBLEDevices(devices: any[]): Promise<void> {
     try {
       const registrations: Record<string, VehicleBLERegistration> = {};

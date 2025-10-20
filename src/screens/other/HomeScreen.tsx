@@ -16,7 +16,14 @@ import { useVehicleStore, useBLEStore, useKeyStore } from "@/stores";
 import { ProtocolHandler } from "@/services/ble";
 import { CertificateService } from "@/services/crypto/CertificateService";
 import { Colors, Fonts, Dimensions } from "@/styles";
-import { PairingStep, VehicleControlRequest, Vehicle, VehicleStatus } from "@/types";
+import {
+  BLECommandName,
+  PairingStep,
+  ResponsePacket,
+  VehicleControlRequest,
+  Vehicle,
+  VehicleStatus,
+} from "@/types";
 
 const PAIRING_STATUS_MESSAGES: Record<PairingStep, string> = {
   idle: "",
@@ -28,6 +35,12 @@ const PAIRING_STATUS_MESSAGES: Record<PairingStep, string> = {
   completing: "Finalizing pairing with the vehicle...",
   completed: "Pairing completed successfully.",
   error: "Pairing failed. Please try again.",
+};
+
+const COMMAND_SUCCESS_MESSAGES: Record<VehicleControlRequest["command"], string> = {
+  UNLOCK: "Vehicle unlocked successfully.",
+  LOCK: "Vehicle locked successfully.",
+  START: "Engine started successfully.",
 };
 
 export const HomeScreen: React.FC = () => {
@@ -49,6 +62,7 @@ export const HomeScreen: React.FC = () => {
     connection,
     pairing,
     sendCommand,
+    markInitialSyncSent,
     initialize: initializeBLE,
     startPairing,
     selectPairingDevice,
@@ -115,6 +129,53 @@ export const HomeScreen: React.FC = () => {
     initializeBLE();
   }, [initializeBLE, loadData]);
 
+  const syncVehicleStateFromResponse = useCallback(
+    async (response: ResponsePacket, command: BLECommandName) => {
+      if (!selectedVehicle || !selectedVehicleId) {
+        return;
+      }
+
+      if (!response?.success) {
+        return;
+      }
+
+      const statusFromVehicleState = (() => {
+        const state = response.vehicleState;
+        if (!state || typeof state !== "object") {
+          return undefined;
+        }
+
+        const nextStatus: Partial<VehicleStatus> = {};
+
+        if (typeof state.locked === "boolean") {
+          nextStatus.doorsLocked = state.locked;
+        }
+        if (typeof state.engineOn === "boolean") {
+          nextStatus.engineRunning = state.engineOn;
+        }
+
+        return Object.keys(nextStatus).length > 0 ? nextStatus : undefined;
+      })();
+
+      const raw = response.data;
+      const legacyStatus =
+        raw && typeof raw === "object"
+          ? raw.status && typeof raw.status === "object"
+            ? raw.status
+            : raw
+          : undefined;
+
+      await applyStatusFromBle(
+        String(selectedVehicle.id),
+        command,
+        statusFromVehicleState ?? legacyStatus,
+        response.timestamp,
+      );
+      await fetchVehicleStatus(String(selectedVehicle.id));
+    },
+    [applyStatusFromBle, fetchVehicleStatus, selectedVehicle, selectedVehicleId],
+  );
+
   const onRefresh = async () => {
     setRefreshing(true);
     await loadData();
@@ -142,39 +203,12 @@ export const HomeScreen: React.FC = () => {
         const commandPacket = ProtocolHandler.createCommandPacket(command, activeKey.id);
         const response = await sendCommand(commandPacket);
         if (response?.success) {
-          const statusFromVehicleState = (() => {
-            const state = response.vehicleState;
-            if (!state || typeof state !== "object") {
-              return undefined;
-            }
+          await syncVehicleStateFromResponse(response, command);
 
-            const nextStatus: Partial<VehicleStatus> = {};
-
-            if (typeof state.locked === "boolean") {
-              nextStatus.doorsLocked = state.locked;
-            }
-            if (typeof state.engineOn === "boolean") {
-              nextStatus.engineRunning = state.engineOn;
-            }
-
-            return Object.keys(nextStatus).length > 0 ? nextStatus : undefined;
-          })();
-
-          const raw = response.data;
-          const legacyStatus =
-            raw && typeof raw === "object"
-              ? raw.status && typeof raw.status === "object"
-                ? raw.status
-                : raw
-              : undefined;
-
-          await applyStatusFromBle(
-            String(selectedVehicle.id),
-            command,
-            statusFromVehicleState ?? legacyStatus,
-            response.timestamp,
-          );
-          await fetchVehicleStatus(String(selectedVehicle.id));
+          const successMessage = COMMAND_SUCCESS_MESSAGES[command];
+          if (successMessage) {
+            Alert.alert("Success", successMessage);
+          }
         }
       } else {
         await controlVehicle(selectedVehicle.id, {
@@ -182,6 +216,11 @@ export const HomeScreen: React.FC = () => {
           keyId: activeKey.id,
         });
         await fetchVehicleStatus(String(selectedVehicle.id));
+
+        const successMessage = COMMAND_SUCCESS_MESSAGES[command];
+        if (successMessage) {
+          Alert.alert("Success", successMessage);
+        }
       }
     } catch (error: any) {
       Alert.alert("Error", error.message || `Failed to send ${command.toLowerCase()} command`);
@@ -189,6 +228,47 @@ export const HomeScreen: React.FC = () => {
       setCommandLoading(null);
     }
   };
+
+  useEffect(() => {
+    if (!connection.isConnected || connection.initialSyncSent) {
+      return;
+    }
+    if (!activeKey || !selectedVehicleId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const runInitialSync = async () => {
+      markInitialSyncSent();
+      try {
+        const packet = ProtocolHandler.createCommandPacket("GET_ALL", activeKey.id);
+        const response = await sendCommand(packet);
+        if (cancelled) {
+          return;
+        }
+        if (response?.success) {
+          await syncVehicleStateFromResponse(response, "GET_ALL");
+        }
+      } catch (error) {
+        console.warn("Initial BLE sync failed:", error);
+      }
+    };
+
+    runInitialSync();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeKey,
+    connection.initialSyncSent,
+    connection.isConnected,
+    markInitialSyncSent,
+    selectedVehicleId,
+    sendCommand,
+    syncVehicleStateFromResponse,
+  ]);
 
   const handleVehicleQuickSelect = async (vehicle: Vehicle) => {
     try {

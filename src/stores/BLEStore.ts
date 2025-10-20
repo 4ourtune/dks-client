@@ -30,6 +30,7 @@ interface BLEStore extends BLEState {
   ) => Promise<void>;
   disconnect: () => Promise<void>;
   sendCommand: (command: CommandPacket) => Promise<ResponsePacket>;
+  sendPairingResult: (deviceId: string, payload: Record<string, any>) => Promise<void>;
   clearError: () => void;
   checkPermissions: () => Promise<{ bluetooth: boolean; location: boolean }>;
   requestPermissions: () => Promise<{ bluetooth: boolean; location: boolean }>;
@@ -51,9 +52,17 @@ interface BLEStore extends BLEState {
   cancelPairing: () => Promise<void>;
   resetPairing: () => Promise<void>;
   autoReconnect: (vehicleId: string) => Promise<void>;
+  markInitialSyncSent: () => void;
 }
 
 export const useBLEStore = create<BLEStore>((set, get) => {
+  let bleRegistrationCacheCleared = false;
+
+  const getAlwaysAllowedDeviceIds = () =>
+    (BLE_CONFIG.ALWAYS_ALLOWED_DEVICE_IDS ?? []).filter(
+      (id): id is string => typeof id === "string" && id.trim().length > 0,
+    );
+
   const updatePairing = (
     step: PairingStep,
     contextPatch: Partial<PairingContext> = {},
@@ -101,6 +110,7 @@ export const useBLEStore = create<BLEStore>((set, get) => {
       lastConnectAttempt: undefined,
       autoReconnectSuspended: false,
       error: null,
+      initialSyncSent: false,
     },
     commands: [],
     registrations: {},
@@ -165,13 +175,20 @@ export const useBLEStore = create<BLEStore>((set, get) => {
           },
         });
 
+        if (BLE_CONFIG.RESET_BLE_REGISTRATIONS_ON_SCAN && !bleRegistrationCacheCleared) {
+          await StorageService.clearBleRegistrations();
+          set({ registrations: {} });
+          bleRegistrationCacheCleared = true;
+        }
+
         const pairingExpectedIds = get().pairing.context.expectedDeviceIds ?? [];
         const registrationDeviceIds = Object.values(get().registrations)
           .map((registration) => registration?.device?.id)
           .filter((id): id is string => Boolean(id));
+        const configuredDeviceIds = getAlwaysAllowedDeviceIds();
 
         const allowedDeviceIds = Array.from(
-          new Set([...pairingExpectedIds, ...registrationDeviceIds]),
+          new Set([...pairingExpectedIds, ...registrationDeviceIds, ...configuredDeviceIds]),
         );
 
         const devices = await BLEManager.startScan({
@@ -255,6 +272,7 @@ export const useBLEStore = create<BLEStore>((set, get) => {
             lastConnected: new Date().toISOString(),
             autoReconnectSuspended: false,
             error: null,
+            initialSyncSent: false,
           },
         });
 
@@ -308,6 +326,7 @@ export const useBLEStore = create<BLEStore>((set, get) => {
               ? true
               : get().connection.autoReconnectSuspended,
             error: error.message || "Failed to connect to device",
+            initialSyncSent: false,
           },
         });
         throw error;
@@ -325,6 +344,7 @@ export const useBLEStore = create<BLEStore>((set, get) => {
             connectedDevice: null,
             connectionQuality: "unknown",
             error: null,
+            initialSyncSent: false,
           },
         });
       } catch (error: any) {
@@ -333,18 +353,29 @@ export const useBLEStore = create<BLEStore>((set, get) => {
             ...get().connection,
             isConnecting: false,
             error: error.message || "Failed to disconnect",
+            initialSyncSent: false,
           },
         });
       }
     },
 
+    markInitialSyncSent: () => {
+      set({
+        connection: {
+          ...get().connection,
+          initialSyncSent: true,
+        },
+      });
+    },
+
     sendCommand: async (command: CommandPacket) => {
+      const commandId = Date.now().toString();
+
       try {
         if (!get().connection.isConnected) {
           throw new Error("Device not connected");
         }
 
-        const commandId = Date.now().toString();
         const bleCommand: BLECommand = {
           id: commandId,
           command,
@@ -358,6 +389,10 @@ export const useBLEStore = create<BLEStore>((set, get) => {
 
         const response = await BLEManager.sendCommand(command);
 
+        if (!response.success) {
+          throw new Error(response.error || "Command rejected by vehicle");
+        }
+
         set({
           commands: get().commands.map((cmd) =>
             cmd.id === commandId ? { ...cmd, status: "success", response } : cmd,
@@ -366,9 +401,7 @@ export const useBLEStore = create<BLEStore>((set, get) => {
 
         return response;
       } catch (error: any) {
-        const commandId = get().commands[get().commands.length - 1]?.id;
-
-        if (commandId) {
+        if (get().commands.some((cmd) => cmd.id === commandId)) {
           set({
             commands: get().commands.map((cmd) =>
               cmd.id === commandId ? { ...cmd, status: "failed" } : cmd,
@@ -384,6 +417,15 @@ export const useBLEStore = create<BLEStore>((set, get) => {
         });
 
         throw error;
+      }
+    },
+
+    sendPairingResult: async (deviceId: string, payload: Record<string, any>) => {
+      try {
+        await BLEManager.writePairingResponse(deviceId, payload);
+      } catch (error: any) {
+        console.warn("Failed to send pairing result:", error);
+        throw error instanceof Error ? error : new Error(String(error));
       }
     },
 
@@ -445,6 +487,8 @@ export const useBLEStore = create<BLEStore>((set, get) => {
         if (registration?.device?.id) {
           expectedSet.add(registration.device.id);
         }
+
+        getAlwaysAllowedDeviceIds().forEach((id) => expectedSet.add(id));
 
         const expectedDeviceIds = Array.from(expectedSet);
 

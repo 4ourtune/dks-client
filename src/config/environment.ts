@@ -4,7 +4,7 @@ export type Environment = "development" | "production" | "staging";
 const configs = {
   // Local development with Android emulator
   development: {
-    API_BASE_URL: "http://127.0.0.1:3000/api",
+    API_BASE_URL: "http://192.168.45.131:3000/api",
     ENVIRONMENT: "development" as Environment,
     DEBUG: true,
   },

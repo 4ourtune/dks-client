@@ -9,6 +9,23 @@ export type PairingStep =
   | "completed"
   | "error";
 
+import type { UserCertificate, VehicleCertificate } from "./pki";
+
+type SerializedCertificateDates<T extends { notBefore: Date; notAfter: Date }> = Omit<
+  T,
+  "notBefore" | "notAfter"
+> & {
+  notBefore: string;
+  notAfter: string;
+};
+
+export type StoredCertificate =
+  | string
+  | UserCertificate
+  | VehicleCertificate
+  | SerializedCertificateDates<UserCertificate>
+  | SerializedCertificateDates<VehicleCertificate>;
+
 export interface PairingContext {
   vehicleId?: string;
   expectedDeviceIds?: string[];
@@ -20,14 +37,14 @@ export interface PairingContext {
   };
   sessionId?: string;
   pairingToken?: string;
-  certificate?: string;
+  certificate?: StoredCertificate;
   session?: PKISessionCache;
   registration?: VehicleBLERegistration;
   result?: {
     keyId?: string;
     message?: string;
     pairingToken?: string;
-    certificate?: string;
+    certificate?: StoredCertificate;
   };
   error?: string;
 }
@@ -45,7 +62,7 @@ export interface VehicleBLERegistration {
   vehicleId: string;
   device: BLEDevice;
   pairingToken?: string;
-  certificate?: string;
+  certificate?: StoredCertificate;
   session?: PKISessionCache;
   updatedAt: number;
 }
@@ -56,9 +73,11 @@ export interface BLEPairingState {
   startedAt?: number;
 }
 
+export type BLECommandName = "UNLOCK" | "LOCK" | "START" | "STOP" | "STATUS" | "TRUNK" | "GET_ALL";
+
 export interface CommandPacket {
   timestamp: number;
-  command: "UNLOCK" | "LOCK" | "START" | "STOP" | "STATUS" | "TRUNK";
+  command: BLECommandName;
   keyId: string;
   signature: string;
 }
@@ -95,6 +114,7 @@ export interface BLEConnectionState {
   lastConnectAttempt?: number;
   autoReconnectSuspended: boolean;
   error: string | null;
+  initialSyncSent: boolean;
 }
 
 export interface BLECommand {
@@ -132,6 +152,8 @@ export const BLE_CONFIG = {
   SCAN_DEVICE_NAME_PREFIX: undefined as string | undefined,
   SCAN_DEVICE_NAME_KEYWORDS: ["rapa", "raspberry"] as string[],
   SCAN_DEVICE_MAC_PREFIXES: [] as string[],
+  RESET_BLE_REGISTRATIONS_ON_SCAN: true,
+  ALWAYS_ALLOWED_DEVICE_IDS: ["d8:3a:dd:38:64:d8"] as string[],
   REQUEST_MTU_SIZE: 247 as number | undefined,
   MAX_WRITE_PAYLOAD: 180,
   // Keep chunk throttling disabled by default to evaluate end-to-end latency.

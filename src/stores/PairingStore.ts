@@ -4,7 +4,13 @@ import { KeyService } from "@/services/api/KeyService";
 import { VehicleService } from "@/services/api/VehicleService";
 import { CertificateService } from "@/services/crypto/CertificateService";
 import { StorageService } from "@/services/storage/StorageService";
-import type { PendingPinSession, PinConfirmResponse, KeyPermissions } from "@/types";
+import { BLEManager } from "@/services/ble/BLEManager";
+import type {
+  PendingPinSession,
+  PinConfirmResponse,
+  KeyPermissions,
+  UserCertificate,
+} from "@/types";
 import { useBLEStore } from "./BLEStore";
 import { useKeyStore } from "./KeyStore";
 import { useVehicleStore } from "./VehicleStore";
@@ -243,9 +249,15 @@ export const usePairingStore = create<PairingStoreState>((set, get) => ({
       const finalizeKeyId = finalizeResult?.keyId ?? null;
       await applyFinalizeResult(result.pairingToken, finalizeKeyId);
 
+      let resolvedPermissions: KeyPermissions | null = null;
+      let issuedCertificate: UserCertificate | null = null;
+
       try {
-        const permissions = await resolvePermissions(finalizeKeyId);
-        await CertificateService.ensureUserCertificate(result.vehicleId, permissions);
+        resolvedPermissions = await resolvePermissions(finalizeKeyId);
+        issuedCertificate = await CertificateService.ensureUserCertificate(
+          result.vehicleId,
+          resolvedPermissions,
+        );
       } catch (certificateError: any) {
         const message =
           certificateError instanceof Error && certificateError.message
@@ -253,6 +265,66 @@ export const usePairingStore = create<PairingStoreState>((set, get) => ({
             : "Failed to provision user certificate";
         console.error("Failed to provision user certificate during pairing:", certificateError);
         throw new Error(message);
+      }
+
+      const bleState = useBLEStore.getState();
+      const pairingDeviceId =
+        bleState.connection.connectedDevice?.id ?? bleState.pairing.context.device?.id;
+
+      if (issuedCertificate) {
+        const serializedCertificate = {
+          ...issuedCertificate,
+          notBefore:
+            issuedCertificate.notBefore instanceof Date
+              ? issuedCertificate.notBefore.toISOString()
+              : issuedCertificate.notBefore,
+          notAfter:
+            issuedCertificate.notAfter instanceof Date
+              ? issuedCertificate.notAfter.toISOString()
+              : issuedCertificate.notAfter,
+        };
+
+        useBLEStore.setState((state) => ({
+          pairing: {
+            ...state.pairing,
+            context: {
+              ...state.pairing.context,
+              result: {
+                ...state.pairing.context.result,
+                certificate: serializedCertificate,
+              },
+            },
+          },
+        }));
+
+        if (pairingDeviceId) {
+          const { sessionId: currentSessionId } = BLEManager.getPKISessionInfo();
+          const pairingPayload: Record<string, any> = {
+            type: "pairing_result",
+            status: "OK",
+            vehicleId: result.vehicleId,
+            pairingToken: result.pairingToken,
+            timestamp: Date.now(),
+            sessionId:
+              typeof currentSessionId === "string" && currentSessionId.length > 0
+                ? currentSessionId
+                : undefined,
+            keyId:
+              finalizeKeyId ?? serializedCertificate.keyId ?? serializedCertificate.id ?? undefined,
+            permissions: resolvedPermissions ?? serializedCertificate.permissions,
+            certificate: serializedCertificate,
+          };
+
+          try {
+            await bleStore.sendPairingResult(pairingDeviceId, pairingPayload);
+          } catch (sendError) {
+            console.warn("Failed to deliver pairing result over BLE:", sendError);
+          }
+        } else {
+          console.warn("Pairing device id unavailable; skipping BLE pairing-result delivery.");
+        }
+      } else {
+        console.warn("No user certificate available to include in pairing result payload.");
       }
 
       set({

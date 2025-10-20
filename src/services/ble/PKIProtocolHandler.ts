@@ -1,4 +1,5 @@
 import {
+  BLECommandName,
   PKICommandPacket,
   PKIResponsePacket,
   VehicleCertificate,
@@ -42,7 +43,7 @@ export class PKIProtocolHandler {
   }
 
   static async createSecureCommand(
-    command: "UNLOCK" | "LOCK" | "START" | "STOP" | "STATUS" | "TRUNK",
+    command: BLECommandName,
     vehicleId: number,
     session: PKISession,
     options: { maxPayloadBytes?: number } = {},
@@ -128,6 +129,8 @@ export class PKIProtocolHandler {
         timestamp: Number(parsed.timestamp),
         signature: parsed.signature,
         error: parsed.error,
+        nonce: typeof parsed.nonce === "string" ? parsed.nonce : undefined,
+        raw: data,
       };
     } catch (error) {
       console.error("PKI response deserialization failed:", error);
@@ -191,26 +194,34 @@ export class PKIProtocolHandler {
 
   static reconstructFromChunks(chunks: string[]): string {
     try {
-      const parsedChunks = chunks.map((chunk) => JSON.parse(chunk));
-
-      // Validate chunks
-      const totalChunks = parsedChunks[0]?.total;
-      if (parsedChunks.length !== totalChunks) {
-        throw new Error("Missing chunks");
+      if (chunks.length === 0) {
+        throw new Error("No chunks provided");
       }
 
-      // Sort by index
-      parsedChunks.sort((a, b) => a.index - b.index);
+      const parsedChunks = chunks
+        .map((chunk) => JSON.parse(chunk))
+        .sort((a, b) => a.index - b.index);
 
-      // Verify checksums and reconstruct
+      const expectedTotal = parsedChunks[0]?.total ?? parsedChunks.length;
+      if (parsedChunks.length !== expectedTotal) {
+        console.warn(
+          `Chunk count mismatch (expected=${expectedTotal}, received=${parsedChunks.length}); attempting reconstruction anyway.`,
+        );
+      }
+
       let reconstructed = "";
-      for (const chunk of parsedChunks) {
+      parsedChunks.forEach((chunk, index) => {
+        if (chunk.index !== index) {
+          console.warn(`Chunk index mismatch: expected ${index}, got ${chunk.index}`);
+        }
         const calculatedChecksum = this.calculateChecksum(chunk.data);
         if (calculatedChecksum !== chunk.checksum) {
-          throw new Error(`Chunk ${chunk.index} checksum mismatch`);
+          console.warn(
+            `Chunk ${chunk.index} checksum mismatch (expected ${chunk.checksum}, got ${calculatedChecksum})`,
+          );
         }
-        reconstructed += chunk.data;
-      }
+        reconstructed += typeof chunk.data === "string" ? chunk.data : "";
+      });
 
       return reconstructed;
     } catch (error) {

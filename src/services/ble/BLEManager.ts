@@ -17,6 +17,7 @@ import {
   BLE_CONFIG,
   PKISession,
   PKISessionCache,
+  PKIResponsePacket,
   VehicleCertificate,
 } from "@/types";
 import { CryptoService } from "./CryptoService";
@@ -40,6 +41,7 @@ class BLEManagerClass {
   private appStateSubscription: NativeEventSubscription | null = null;
   private connectingPromise: Promise<void> | null = null;
   private notificationsEnabledFor: Set<string> = new Set();
+  private writeQueue: Promise<void> = Promise.resolve();
   private activeVehicleId: number | null = null;
 
   constructor() {
@@ -82,6 +84,107 @@ class BLEManagerClass {
 
       console.log(`App state changed: ${previousState} -> ${nextState}`);
     });
+  }
+
+  private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const queued = this.writeQueue.then(operation, operation);
+    this.writeQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
+  private async writeCharacteristicData(
+    characteristic: Characteristic,
+    base64Data: string,
+    context: string,
+    options: { allowFallback?: boolean } = {},
+  ): Promise<void> {
+    const { allowFallback = true } = options;
+
+    await this.enqueueWrite(async () => {
+      try {
+        await this.performWriteWithResponse(characteristic, base64Data);
+        console.log(`[BLE] ${context} write acknowledged`);
+      } catch (error: any) {
+        const bleError = error as BleError | undefined;
+        const message = typeof bleError?.message === "string" ? bleError.message : "";
+        const code = bleError?.errorCode;
+
+        if (allowFallback && this.isRecoverableWriteRejection(code, message)) {
+          console.warn(`[BLE] ${context} write rejected; retrying without response`, {
+            message,
+            code,
+          });
+          await this.delay(50);
+          await this.performWriteWithoutResponse(characteristic, base64Data);
+          console.log(`[BLE] ${context} write completed without response`);
+          return;
+        }
+
+        console.warn(`[BLE] ${context} write failed:`, error);
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+    });
+  }
+
+  private async performWriteWithResponse(
+    characteristic: Characteristic,
+    base64Data: string,
+  ): Promise<void> {
+    if (typeof (characteristic as any).writeWithResponse === "function") {
+      await (characteristic as any).writeWithResponse(base64Data);
+      return;
+    }
+
+    const deviceId = this.connectedDevice?.id;
+    const serviceUUID = characteristic.serviceUUID || BLE_CONFIG.SERVICE_UUID;
+    if (!deviceId || !serviceUUID) {
+      throw new Error("Device or service identifier missing for write operation");
+    }
+
+    const managerAny = this.manager as any;
+    if (typeof managerAny.writeCharacteristicWithResponseForDevice === "function") {
+      await managerAny.writeCharacteristicWithResponseForDevice(
+        deviceId,
+        serviceUUID,
+        characteristic.uuid,
+        base64Data,
+      );
+      return;
+    }
+
+    throw new Error("writeWithResponse not supported on this platform");
+  }
+
+  private async performWriteWithoutResponse(
+    characteristic: Characteristic,
+    base64Data: string,
+  ): Promise<void> {
+    if (typeof (characteristic as any).writeWithoutResponse === "function") {
+      await (characteristic as any).writeWithoutResponse(base64Data);
+      return;
+    }
+
+    const deviceId = this.connectedDevice?.id;
+    const serviceUUID = characteristic.serviceUUID || BLE_CONFIG.SERVICE_UUID;
+    if (!deviceId || !serviceUUID) {
+      throw new Error("Device or service identifier missing for write operation");
+    }
+
+    const managerAny = this.manager as any;
+    if (typeof managerAny.writeCharacteristicWithoutResponseForDevice === "function") {
+      await managerAny.writeCharacteristicWithoutResponseForDevice(
+        deviceId,
+        serviceUUID,
+        characteristic.uuid,
+        base64Data,
+      );
+      return;
+    }
+
+    throw new Error("writeWithoutResponse not supported on this platform");
   }
 
   private async waitForActiveAppState(
@@ -642,8 +745,45 @@ class BLEManagerClass {
       throw new Error("Pairing result characteristic not available");
     }
 
-    const encoded = Buffer.from(JSON.stringify(payload)).toString("base64");
-    await characteristic.writeWithResponse(encoded);
+    const serialized = JSON.stringify(payload);
+    const maxPayload = this.getMaxWritePayload();
+    const chunks = PKIProtocolHandler.chunkData(serialized, maxPayload);
+
+    console.log("[BLE] Writing pairing result", {
+      characteristic: characteristic.uuid,
+      payloadSize: serialized.length,
+      chunks: chunks.length,
+      maxPayload,
+    });
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const base64Chunk = Buffer.from(chunk, "utf8").toString("base64");
+      await this.writeCharacteristicData(
+        characteristic,
+        base64Chunk,
+        `pairing_result chunk ${index + 1}/${chunks.length}`,
+      );
+    }
+
+    console.log("[BLE] Pairing result delivery completed");
+  }
+
+  private isRecoverableWriteRejection(code: BleErrorCode | undefined, message: string): boolean {
+    const tolerantCodes = new Set<BleErrorCode | undefined>([
+      BleErrorCode.OperationCancelled,
+      BleErrorCode.OperationStartFailed,
+      BleErrorCode.OperationTimedOut,
+      BleErrorCode.CharacteristicWriteFailed,
+    ]);
+
+    const tolerantMessages = [
+      "Operation was rejected",
+      "GATT error code: 4",
+      "Cannot write characteristic",
+    ];
+
+    return tolerantCodes.has(code) || tolerantMessages.some((text) => message.includes(text));
   }
   async sendCommand(command: CommandPacket): Promise<ResponsePacket> {
     if (this.mockMode) {
@@ -817,11 +957,18 @@ class BLEManagerClass {
         throw new Error("Failed to establish PKI session context after handshake");
       }
       if (handshake?.vehiclePublicKey) {
+        const normalizedKey = this.normalizeVehiclePublicKey(handshake.vehiclePublicKey);
         this.pkiSession = {
           ...this.pkiSession,
-          vehiclePublicKey: handshake.vehiclePublicKey || this.pkiSession.vehiclePublicKey || "",
+          vehiclePublicKey: normalizedKey ?? this.pkiSession.vehiclePublicKey ?? "",
           serverNonce: handshake.vehicleNonce ?? this.pkiSession.serverNonce,
         };
+        if (normalizedKey) {
+          CryptoService.updateSessionVehiclePublicKey(
+            [vehicleId, this.connectedDevice?.id, this.activeVehicleId],
+            normalizedKey,
+          );
+        }
       }
 
       await this.pushSessionToDevice(this.pkiSession, vehicleId);
@@ -935,11 +1082,13 @@ class BLEManagerClass {
     const adoptSession = (session: PKISession, source: string, cacheKey?: string | null) => {
       const expiresAtDate = coerceDate(session.expiresAt) ?? new Date(Date.now() + 5 * 60 * 1000);
       const createdAtDate = coerceDate(session.createdAt) ?? new Date();
+      const normalizedKey = this.normalizeVehiclePublicKey(session.vehiclePublicKey);
 
       this.pkiSession = {
         ...session,
         vehicleId,
-        vehiclePublicKey: session.vehiclePublicKey ?? this.pkiSession?.vehiclePublicKey ?? "",
+        vehiclePublicKey:
+          normalizedKey ?? this.normalizeVehiclePublicKey(this.pkiSession?.vehiclePublicKey) ?? "",
         createdAt: createdAtDate,
         expiresAt: expiresAtDate,
         isValid: session.isValid !== false,
@@ -952,6 +1101,13 @@ class BLEManagerClass {
         expiresAt: this.pkiSession.expiresAt.toISOString(),
         source,
       });
+
+      if (normalizedKey) {
+        CryptoService.updateSessionVehiclePublicKey(
+          [vehicleId, this.connectedDevice?.id, this.activeVehicleId],
+          normalizedKey,
+        );
+      }
     };
 
     if (serverSession) {
@@ -1038,7 +1194,7 @@ class BLEManagerClass {
     }
 
     try {
-      await characteristic.writeWithResponse(base64Payload);
+      await this.writeCharacteristicData(characteristic, base64Payload, operation);
     } catch (error: any) {
       if (collector) {
         collector.cancel(error instanceof Error ? error : new Error(String(error)));
@@ -1114,8 +1270,16 @@ class BLEManagerClass {
       expectResponse: false,
     });
 
+    const normalizedKey = this.normalizeVehiclePublicKey(handshakeResult.vehiclePublicKey);
+    if (normalizedKey) {
+      CryptoService.updateSessionVehiclePublicKey(
+        [vehicleId, this.connectedDevice?.id, this.activeVehicleId],
+        normalizedKey,
+      );
+    }
+
     return {
-      vehiclePublicKey: handshakeResult.vehiclePublicKey,
+      vehiclePublicKey: normalizedKey,
       vehicleNonce: handshakeResult.vehicleNonce,
     };
   }
@@ -1192,7 +1356,9 @@ class BLEManagerClass {
       const sessionCache: PKISessionCache = {
         sessionId: response.sessionId,
         expiresAt: Number.isNaN(expiresAtMs) ? undefined : expiresAtMs,
-        vehiclePublicKey: response.vehiclePublicKey ?? registration?.session?.vehiclePublicKey,
+        vehiclePublicKey:
+          this.normalizeVehiclePublicKey(response.vehiclePublicKey) ??
+          this.normalizeVehiclePublicKey(registration?.session?.vehiclePublicKey),
         sessionKey: response.sessionKey,
         clientNonce: response.clientNonce,
         serverNonce: response.serverNonce,
@@ -1226,7 +1392,9 @@ class BLEManagerClass {
             sessionKey: response.sessionKey,
             expiresAt: expiresAtTimestamp,
             vehicleId,
-            vehiclePublicKey: response.vehiclePublicKey ?? registration?.session?.vehiclePublicKey,
+            vehiclePublicKey:
+              this.normalizeVehiclePublicKey(response.vehiclePublicKey) ??
+              this.normalizeVehiclePublicKey(registration?.session?.vehiclePublicKey),
             clientNonce: response.clientNonce,
             serverNonce: response.serverNonce,
           }),
@@ -1240,10 +1408,10 @@ class BLEManagerClass {
           ...primarySession,
           vehicleId,
           vehiclePublicKey:
-            primarySession.vehiclePublicKey ??
-            response.vehiclePublicKey ??
-            registration?.session?.vehiclePublicKey ??
-            this.pkiSession?.vehiclePublicKey ??
+            this.normalizeVehiclePublicKey(primarySession.vehiclePublicKey) ??
+            this.normalizeVehiclePublicKey(response.vehiclePublicKey) ??
+            this.normalizeVehiclePublicKey(registration?.session?.vehiclePublicKey) ??
+            this.normalizeVehiclePublicKey(this.pkiSession?.vehiclePublicKey) ??
             "",
           isValid: true,
         };
@@ -1253,13 +1421,31 @@ class BLEManagerClass {
           expiresAt: this.pkiSession.expiresAt.toISOString(),
         });
         await this.pushSessionToDevice(this.pkiSession, vehicleId);
+
+        const sessionKeyRaw = this.pkiSession.vehiclePublicKey;
+        const normalizedPrimaryKey = this.normalizeVehiclePublicKey(sessionKeyRaw);
+        if (normalizedPrimaryKey) {
+          CryptoService.updateSessionVehiclePublicKey(
+            [vehicleId, this.connectedDevice?.id, this.activeVehicleId],
+            normalizedPrimaryKey,
+          );
+        }
+
         const handshake = await this.performBleHandshake(vehicleId);
         if (handshake?.vehiclePublicKey) {
+          const handshakeKeyRaw = handshake.vehiclePublicKey;
+          const normalizedHandshakeKey = this.normalizeVehiclePublicKey(handshakeKeyRaw);
           this.pkiSession = {
             ...this.pkiSession,
-            vehiclePublicKey: handshake.vehiclePublicKey || this.pkiSession.vehiclePublicKey || "",
+            vehiclePublicKey: normalizedHandshakeKey ?? this.pkiSession.vehiclePublicKey ?? "",
             serverNonce: handshake.vehicleNonce ?? this.pkiSession.serverNonce,
           };
+          if (normalizedHandshakeKey) {
+            CryptoService.updateSessionVehiclePublicKey(
+              [vehicleId, this.connectedDevice?.id, this.activeVehicleId],
+              normalizedHandshakeKey,
+            );
+          }
         }
       }
       console.log("[BLE] PKI session cache seeded", {
@@ -1286,10 +1472,7 @@ class BLEManagerClass {
         "vehicle pairing has not been completed",
       ];
       if (accessErrors.some((entry) => normalized.includes(entry))) {
-        console.log(
-          "[BLE] PKI session refresh deferred until server pairing finalizes:",
-          message,
-        );
+        console.log("[BLE] PKI session refresh deferred until server pairing finalizes:", message);
       } else {
         console.warn("PKI session refresh via API failed:", error);
       }
@@ -1523,8 +1706,18 @@ class BLEManagerClass {
       this.notificationsEnabledFor.add(key);
       console.log("Explicitly enabled notifications for characteristic:", characteristic.uuid);
     } catch (error: any) {
-      if (error?.message?.includes("Cannot write to descriptor")) {
+      const tolerantMessages = [
+        "Cannot write to descriptor",
+        "Descriptors are not writable",
+        "Operation was rejected",
+      ];
+
+      if (
+        typeof error?.message === "string" &&
+        tolerantMessages.some((message) => error.message.includes(message))
+      ) {
         console.log("Skipping explicit notification enable; platform restricts CCCD writes.");
+        this.notificationsEnabledFor.add(key);
       } else {
         console.warn("Failed to enable notifications explicitly:", error);
       }
@@ -1770,6 +1963,108 @@ class BLEManagerClass {
     );
   }
 
+  private isPKIResponseEnvelope(value: any): value is PKIResponsePacket & { type?: string } {
+    return (
+      value &&
+      typeof value === "object" &&
+      typeof (value as any).encryptedPayload === "string" &&
+      typeof (value as any).sessionId === "string" &&
+      (value.type === "pki_response" || typeof (value as any).success === "boolean")
+    );
+  }
+
+  private hydrateVehiclePublicKeyFromResponses(
+    responses: Array<{ value: any }>,
+    vehicleId?: number,
+  ): string | undefined {
+    if (!responses || responses.length === 0) {
+      return undefined;
+    }
+
+    const handshake = responses.find(
+      ({ value }) =>
+        value &&
+        typeof value === "object" &&
+        value.type === "handshake_ack" &&
+        typeof value.vehiclePublicKey === "string" &&
+        value.vehiclePublicKey.trim().length > 0,
+    );
+
+    if (!handshake) {
+      return undefined;
+    }
+
+    const vehiclePublicKey = this.normalizeVehiclePublicKey(handshake.value.vehiclePublicKey);
+    if (!vehiclePublicKey) {
+      return undefined;
+    }
+
+    if (this.pkiSession) {
+      if (this.pkiSession.vehiclePublicKey !== vehiclePublicKey) {
+        this.pkiSession = {
+          ...this.pkiSession,
+          vehiclePublicKey,
+        };
+      }
+    }
+
+    const candidateKeys: Array<string | number> = [];
+    if (typeof vehicleId === "number" && Number.isFinite(vehicleId)) {
+      candidateKeys.push(vehicleId);
+    }
+    if (typeof this.activeVehicleId === "number" && Number.isFinite(this.activeVehicleId)) {
+      candidateKeys.push(this.activeVehicleId);
+    }
+    if (this.connectedDevice?.id) {
+      candidateKeys.push(this.connectedDevice.id);
+    }
+
+    CryptoService.updateSessionVehiclePublicKey(candidateKeys, vehiclePublicKey);
+    return vehiclePublicKey;
+  }
+
+  private normalizeVehiclePublicKey(raw: string | null | undefined): string | undefined {
+    if (!raw) {
+      return undefined;
+    }
+
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const hexCandidate = trimmed.replace(/^0x/i, "");
+    if (/^[0-9a-fA-F]+$/.test(hexCandidate) && hexCandidate.length >= 128) {
+      return hexCandidate.toLowerCase();
+    }
+
+    if (trimmed.includes("BEGIN PUBLIC KEY")) {
+      try {
+        const base64 = trimmed
+          .replace(/-----BEGIN PUBLIC KEY-----/g, "")
+          .replace(/-----END PUBLIC KEY-----/g, "")
+          .replace(/\s+/g, "");
+        const der = Buffer.from(base64, "base64");
+
+        if (der.length >= 65) {
+          const markerIndex = der.lastIndexOf(0x04);
+          const publicKeySlice =
+            markerIndex >= 0 && der.length - markerIndex >= 65
+              ? der.slice(markerIndex, markerIndex + 65)
+              : der.slice(der.length - 65);
+
+          if (publicKeySlice.length === 65 && publicKeySlice[0] === 0x04) {
+            return Buffer.from(publicKeySlice).toString("hex");
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to normalize PEM-formatted vehicle public key:", error);
+      }
+    }
+
+    return undefined;
+  }
+
   private isRelevantResponsePacket(
     packet: any,
     commandName: string,
@@ -1842,8 +2137,7 @@ class BLEManagerClass {
 
         try {
           console.log("Writing cert_request to characteristic...");
-          await this.characteristic.writeWithResponse(base64Data);
-          console.log("cert_request write completed");
+          await this.writeCharacteristicData(this.characteristic, base64Data, "cert_request");
         } catch (writeError) {
           collector.cancel(
             writeError instanceof Error ? writeError : new Error(String(writeError)),
@@ -1867,8 +2161,7 @@ class BLEManagerClass {
           "Characteristic is not notifiable; using read polling for cert_request response",
         );
         console.log("Writing cert_request to characteristic...");
-        await this.characteristic.writeWithResponse(base64Data);
-        console.log("cert_request write completed");
+        await this.writeCharacteristicData(this.characteristic, base64Data, "cert_request");
         responseBuffer = await this.collectResponseViaRead(this.characteristic, {
           overallTimeoutMs: BLE_CONFIG.READ_OVERALL_TIMEOUT_MS ?? BLE_CONFIG.COMMAND_TIMEOUT * 3,
         });
@@ -2049,8 +2342,11 @@ class BLEManagerClass {
           console.log(
             `[BLE] Writing PKI chunk ${i + 1}/${commandChunks.length} (${chunk.length} bytes)`,
           );
-          await this.characteristic.writeWithResponse(base64Chunk);
-          console.log(`[BLE] PKI chunk ${i + 1}/${commandChunks.length} write completed`);
+          await this.writeCharacteristicData(
+            this.characteristic,
+            base64Chunk,
+            `PKI chunk ${i + 1}/${commandChunks.length}`,
+          );
           if (chunkDelay > 0) {
             await this.delay(chunkDelay);
           }
@@ -2081,8 +2377,11 @@ class BLEManagerClass {
         console.log(
           `[BLE] Writing PKI chunk ${i + 1}/${commandChunks.length} (${chunk.length} bytes)`,
         );
-        await this.characteristic.writeWithResponse(base64Chunk);
-        console.log(`[BLE] PKI chunk ${i + 1}/${commandChunks.length} write completed`);
+        await this.writeCharacteristicData(
+          this.characteristic,
+          base64Chunk,
+          `PKI chunk ${i + 1}/${commandChunks.length}`,
+        );
         if (chunkDelay > 0) {
           await this.delay(chunkDelay);
         }
@@ -2103,6 +2402,10 @@ class BLEManagerClass {
     console.log("Decoded secure response (utf-8):", decodedPrimary);
 
     const envelope = this.parseResponseEnvelope(decodedPrimary);
+    const discoveredVehiclePublicKey = this.hydrateVehiclePublicKeyFromResponses(
+      envelope.responses,
+      vehicleId,
+    );
     if (envelope.remainder.trim().length > 0) {
       console.log(
         "Secure response contained extra payload after parsing sequence:",
@@ -2145,6 +2448,9 @@ class BLEManagerClass {
         );
       if (successPacket) {
         responsePayload = successPacket.value;
+        if (successPacket.raw && typeof successPacket.raw === "string") {
+          (responsePayload as any).raw = successPacket.raw;
+        }
       }
     }
 
@@ -2161,21 +2467,97 @@ class BLEManagerClass {
       throw new Error("Secure command response not found");
     }
 
+    let resolvedPayload: any = responsePayload;
+
+    if (this.isPKIResponseEnvelope(responsePayload)) {
+      if (!this.pkiSession) {
+        throw new Error("PKI session unavailable for secure response verification");
+      }
+
+      let vehiclePublicKey =
+        this.normalizeVehiclePublicKey(this.pkiSession?.vehiclePublicKey) ??
+        this.normalizeVehiclePublicKey((responsePayload as any)?.vehiclePublicKey) ??
+        this.normalizeVehiclePublicKey(discoveredVehiclePublicKey);
+
+      if ((!vehiclePublicKey || vehiclePublicKey.length === 0) && typeof vehicleId === "number") {
+        try {
+          const cachedCertificate = await CertificateService.getCachedVehicleCertificate(vehicleId);
+          if (cachedCertificate?.publicKey) {
+            vehiclePublicKey = this.normalizeVehiclePublicKey(cachedCertificate.publicKey);
+          }
+        } catch (certificateError) {
+          console.warn(
+            "Failed to load cached vehicle certificate for PKI response verification:",
+            certificateError,
+          );
+        }
+      }
+
+      if (!vehiclePublicKey) {
+        throw new Error("Vehicle public key missing for PKI response verification");
+      }
+
+      if (this.pkiSession && this.pkiSession.vehiclePublicKey !== vehiclePublicKey) {
+        this.pkiSession = {
+          ...this.pkiSession,
+          vehiclePublicKey,
+        };
+      }
+      CryptoService.updateSessionVehiclePublicKey(
+        [
+          typeof vehicleId === "number" ? vehicleId : undefined,
+          this.connectedDevice?.id,
+          this.activeVehicleId !== null ? this.activeVehicleId : undefined,
+        ],
+        vehiclePublicKey,
+      );
+
+      try {
+        const decrypted = await CryptoService.verifyPKIResponse(
+          responsePayload,
+          this.pkiSession,
+          vehiclePublicKey,
+        );
+
+        if (decrypted && typeof decrypted === "object") {
+          resolvedPayload = {
+            ...decrypted,
+            success:
+              typeof decrypted.success === "boolean" ? decrypted.success : responsePayload.success,
+            error: decrypted.error ?? responsePayload.error,
+          };
+        } else {
+          resolvedPayload = {
+            success: responsePayload.success,
+            result: decrypted,
+            error: responsePayload.error,
+          };
+        }
+      } catch (verificationError: any) {
+        console.warn("Failed to decrypt PKI response payload:", verificationError);
+        throw verificationError instanceof Error
+          ? verificationError
+          : new Error(String(verificationError));
+      }
+    }
+
     const responseSuccess =
-      typeof responsePayload.success === "boolean"
-        ? responsePayload.success
-        : !responsePayload.error;
+      typeof resolvedPayload.success === "boolean"
+        ? resolvedPayload.success
+        : !resolvedPayload.error;
 
     return {
       success: responseSuccess,
       command: command.command,
       timestamp: Date.now(),
       data:
-        responsePayload.data ??
-        responsePayload.result ??
-        responsePayload.certificate ??
-        responsePayload,
-      error: responsePayload.error,
+        resolvedPayload.data ??
+        resolvedPayload.result ??
+        resolvedPayload.certificate ??
+        resolvedPayload,
+      vehicleState: resolvedPayload.vehicleState,
+      metadata: resolvedPayload.metadata,
+      error: resolvedPayload.error,
     };
   }
 
@@ -2209,7 +2591,7 @@ class BLEManagerClass {
         });
 
         try {
-          await this.characteristic.writeWithResponse(base64Data);
+          await this.writeCharacteristicData(this.characteristic, base64Data, "legacy_command");
         } catch (writeError) {
           collector.cancel(
             writeError instanceof Error ? writeError : new Error(String(writeError)),
@@ -2232,7 +2614,7 @@ class BLEManagerClass {
         console.log(
           "Characteristic is not notifiable; using read polling for legacy command response",
         );
-        await this.characteristic.writeWithResponse(base64Data);
+        await this.writeCharacteristicData(this.characteristic, base64Data, "legacy_command");
         responseBuffer = await this.collectResponseViaRead(this.characteristic, {
           overallTimeoutMs: BLE_CONFIG.READ_OVERALL_TIMEOUT_MS ?? BLE_CONFIG.COMMAND_TIMEOUT * 2,
         });

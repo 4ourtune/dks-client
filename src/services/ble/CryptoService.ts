@@ -322,21 +322,71 @@ export class CryptoService {
   ): Promise<any> {
     try {
       // Verify signature
-      const signatureData = JSON.stringify({
+      const payloadCandidates = new Set<string>();
+
+      if (
+        typeof response.sessionId === "string" &&
+        response.sessionId.length > 0 &&
+        typeof response.encryptedPayload === "string" &&
+        response.encryptedPayload.length > 0 &&
+        typeof response.timestamp === "number"
+      ) {
+        const messageParts = [
+          response.sessionId,
+          String(response.timestamp),
+          response.encryptedPayload,
+        ];
+        if (typeof response.nonce === "string" && response.nonce.length > 0) {
+          messageParts.push(response.nonce);
+        }
+        payloadCandidates.add(messageParts.join("\n"));
+      }
+
+      if (typeof response.raw === "string" && response.raw.length > 0) {
+        payloadCandidates.add(response.raw);
+      }
+
+      const canonicalPayload = JSON.stringify({
         sessionId: response.sessionId,
         encryptedPayload: response.encryptedPayload,
         timestamp: response.timestamp,
-        success: response.success,
+        success: Boolean(response.success),
       });
+      payloadCandidates.add(canonicalPayload);
 
-      const isSignatureValid = ECCKeyManager.verifySignature(
-        signatureData,
-        response.signature,
-        vehiclePublicKey,
-      );
+      const alphabeticalPayload = JSON.stringify({
+        encryptedPayload: response.encryptedPayload,
+        sessionId: response.sessionId,
+        success: Boolean(response.success),
+        timestamp: response.timestamp,
+      });
+      payloadCandidates.add(alphabeticalPayload);
 
-      if (!isSignatureValid) {
-        throw new Error("Invalid response signature");
+      let signatureValid = false;
+      let lastSignatureError: Error | null = null;
+
+      for (const candidate of payloadCandidates) {
+        try {
+          const isSignatureValid = ECCKeyManager.verifySignature(
+            candidate,
+            response.signature,
+            vehiclePublicKey,
+          );
+
+          if (isSignatureValid) {
+            signatureValid = true;
+            break;
+          }
+        } catch (verificationError: any) {
+          lastSignatureError =
+            verificationError instanceof Error
+              ? verificationError
+              : new Error(String(verificationError));
+        }
+      }
+
+      if (!signatureValid) {
+        throw lastSignatureError ?? new Error("Invalid response signature");
       }
 
       // Check session ID
@@ -465,6 +515,50 @@ export class CryptoService {
   static clearAllSessions(): void {
     this.sessions.clear();
     console.log("All PKI sessions cleared");
+  }
+
+  static updateSessionVehiclePublicKey(
+    candidates: Array<string | number | null | undefined>,
+    vehiclePublicKey: string,
+  ): void {
+    const trimmedKey = typeof vehiclePublicKey === "string" ? vehiclePublicKey.trim() : "";
+    if (!trimmedKey) {
+      return;
+    }
+
+    const normalizedKeys = new Set<string>();
+    candidates.forEach((candidate) => {
+      if (candidate === null || candidate === undefined) {
+        return;
+      }
+      const value = typeof candidate === "number" ? String(candidate) : candidate;
+      if (!value) {
+        return;
+      }
+      normalizedKeys.add(this.normalizeKey(value));
+    });
+
+    normalizedKeys.forEach((normalized) => {
+      const existing = this.sessions.get(normalized);
+      if (!existing) {
+        return;
+      }
+
+      if (existing.vehiclePublicKey === trimmedKey) {
+        return;
+      }
+
+      const updated: PKISession = {
+        ...existing,
+        vehiclePublicKey: trimmedKey,
+      };
+
+      this.sessions.set(normalized, updated);
+
+      if (updated.vehicleId !== undefined) {
+        this.sessions.set(this.normalizeKey(String(updated.vehicleId)), updated);
+      }
+    });
   }
 
   static getActiveSessions(): string[] {

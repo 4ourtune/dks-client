@@ -67,6 +67,8 @@ export interface PKIResponsePacket {
   timestamp: number;
   signature: string;
   error?: string;
+  nonce?: string;
+  raw?: string;
 }
 
 export interface CertificateRequest {

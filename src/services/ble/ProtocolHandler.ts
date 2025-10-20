@@ -1,11 +1,8 @@
-import { CommandPacket, ResponsePacket } from "@/types";
+import { BLECommandName, CommandPacket, ResponsePacket } from "@/types";
 import { CryptoService } from "./CryptoService";
 
 export class ProtocolHandler {
-  static createCommandPacket(
-    command: "UNLOCK" | "LOCK" | "START" | "STOP" | "STATUS" | "TRUNK",
-    keyId: string,
-  ): CommandPacket {
+  static createCommandPacket(command: BLECommandName, keyId: string): CommandPacket {
     const timestamp = Date.now();
     const commandData = {
       timestamp,

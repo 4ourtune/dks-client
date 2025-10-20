@@ -8,6 +8,7 @@ import {
   VehicleControlResponse,
   VehicleStatus,
   VehicleLog,
+  BLECommandName,
 } from "@/types";
 import { VehicleService } from "@/services/api/VehicleService";
 import { useBLEStore } from "./BLEStore";
@@ -23,7 +24,7 @@ const buildDefaultStatus = (overrides: Partial<VehicleStatus> = {}): VehicleStat
 
 const computeNextStatus = (
   previous: VehicleStatus,
-  command: VehicleControlRequest["command"],
+  command: BLECommandName,
   statusUpdate?: Partial<VehicleStatus>,
   timestamp?: string,
 ): VehicleStatus => {
@@ -74,7 +75,7 @@ interface VehicleStore extends VehicleState {
   ) => Promise<VehicleControlResponse>;
   applyStatusFromBle: (
     vehicleId: string,
-    command: VehicleControlRequest["command"],
+    command: BLECommandName,
     status?: Partial<VehicleStatus>,
     timestamp?: number | string,
   ) => Promise<void>;
@@ -283,7 +284,7 @@ export const useVehicleStore = create<VehicleStore>((set, get) => ({
 
   applyStatusFromBle: async (
     vehicleId: string,
-    command: VehicleControlRequest["command"],
+    command: BLECommandName,
     status?: Partial<VehicleStatus>,
     timestamp?: number | string,
   ) => {
